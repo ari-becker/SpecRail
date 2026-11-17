@@ -30,8 +30,11 @@ names.
    inherits from an ancestor, so that it counts as done.
 5. Run `specrail check` and fix what it reports, until it passes.
 
-When you renumber, retitle or move a section, update every reference and
-dependency entry that names it. `specrail check` reports a reference that
+After adding, removing or reordering sections, run `specrail fmt`. It
+renumbers sections by position and rewrites every reference and dependency
+entry that names a renumbered section, so never renumber by hand. It also
+normalizes headings and metadata blocks. When you retitle or move a section,
+update the references that name it. `specrail check` reports a reference that
 nothing matches as dangling, and one where only the number or only the title
 still matches as stale, and shows the current headings.
 

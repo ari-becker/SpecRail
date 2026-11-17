@@ -50,6 +50,7 @@ test {
     _ = @import("date.zig");
     _ = @import("diag.zig");
     _ = @import("files.zig");
+    _ = @import("fmt.zig");
     _ = @import("init.zig");
     _ = @import("project.zig");
     _ = @import("refs.zig");

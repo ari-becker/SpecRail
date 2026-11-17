@@ -19,6 +19,8 @@ pub const Item = struct {
     value: Value,
     line: u32,
     column: u32,
+    /// The value as written.
+    text: []const u8,
 };
 
 /// A value of one of the supported types.
@@ -47,6 +49,8 @@ pub const Value = union(enum) {
 pub const Entry = struct {
     key: []const u8,
     value: Value,
+    /// The value as written, which may span several lines.
+    text: []const u8,
     /// 1-based position of the key.
     line: u32,
     column: u32,
@@ -179,7 +183,9 @@ const Parser = struct {
             if (p.peek() != '=') return p.fail("expected '=' after the key '{s}'", .{key});
             p.pos += 1;
             p.skipSpaces();
+            const value_start = p.pos;
             const v = try p.value();
+            const value_text = p.text[value_start..p.pos];
             p.skipSpaces();
             if (p.peek() == '#') try p.comment();
             if (!p.atLineEnd()) return p.fail("unexpected text after the value of '{s}'", .{key});
@@ -192,7 +198,13 @@ const Parser = struct {
             }
             try p.entries.append(
                 p.arena,
-                .{ .key = key, .value = v, .line = key_at.line, .column = key_at.column },
+                .{
+                    .key = key,
+                    .value = v,
+                    .text = value_text,
+                    .line = key_at.line,
+                    .column = key_at.column,
+                },
             );
         }
     }
@@ -306,7 +318,12 @@ const Parser = struct {
             }
             const line = p.line;
             const col = p.column();
-            try items.append(p.arena, .{ .value = try p.value(), .line = line, .column = col });
+            const start = p.pos;
+            const v = try p.value();
+            try items.append(
+                p.arena,
+                .{ .value = v, .line = line, .column = col, .text = p.text[start..p.pos] },
+            );
             try p.skipArrayFiller();
             const d = p.peek() orelse return p.fail("unterminated array", .{});
             if (d == ',') {

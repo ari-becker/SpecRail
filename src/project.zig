@@ -90,6 +90,49 @@ pub fn open(ctx: *cli.Ctx) cli.Error!?Project {
     };
 }
 
+/// The spec files a command was given.
+pub const Selection = union(enum) {
+    /// Every spec file: the command was given no paths.
+    all,
+    /// A path named no spec file; the usage error has been printed.
+    refused,
+    /// The spec files at or under the paths the command was given.
+    some: []const []const u8,
+};
+
+/// Resolves command-line paths, relative to the working directory, to the spec
+/// files at them or under them.
+pub fn selectSpecs(
+    ctx: *cli.Ctx,
+    p: Project,
+    paths: []const []const u8,
+    command: []const u8,
+) cli.Error!Selection {
+    if (paths.len == 0) return .all;
+    var selected: std.ArrayList([]const u8) = .empty;
+    errdefer selected.deinit(ctx.arena);
+    for (paths) |arg| {
+        const rel = (try projectPath(ctx.arena, ctx.cwd, p.root, arg)) orelse {
+            _ = try cli.usageError(ctx, command, "'{s}' is outside the project", .{arg});
+            return .refused;
+        };
+        var matched = false;
+        specs: for (p.spec_files) |f| {
+            if (!std.mem.eql(u8, f.path, rel) and !files.isUnder(f.path, rel)) continue :specs;
+            matched = true;
+            for (selected.items) |already| {
+                if (std.mem.eql(u8, already, f.path)) break;
+            } else try selected.append(ctx.arena, f.path);
+        }
+        if (!matched) {
+            const msg = "'{s}' is not a spec file or a directory of spec files";
+            _ = try cli.usageError(ctx, command, msg, .{arg});
+            return .refused;
+        }
+    }
+    return .{ .some = try selected.toOwnedSlice(ctx.arena) };
+}
+
 /// Resolves `.` and `..` in an absolute path.
 pub fn normalizeAbsolute(arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;

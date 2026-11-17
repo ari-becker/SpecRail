@@ -5,9 +5,6 @@ section. It never edits prose.
 ---
 
 # § 1 Layout
-```toml
-status = "planned"
-```
 
 ## § 1.1 Heading spacing
 
@@ -31,9 +28,6 @@ headings of the spec files it formats and in the reference lines and
 dependency entries that name those files, changing nothing else on the line.
 
 # § 2 Renumbering
-```toml
-status = "planned"
-```
 
 Section numbers follow position. An author or agent inserting a section gives
 it any number and runs fmt; the new section and every section after it get
@@ -63,9 +57,6 @@ NOT renumber that file or rewrite any reference to it, and MUST report an
 error.
 
 # § 3 Metadata blocks
-```toml
-status = "planned"
-```
 
 ## § 3.1 Placement
 
@@ -96,9 +87,6 @@ status would be `done` without it, and MUST remove a metadata block left with
 no keys.
 
 # § 4 Operation
-```toml
-status = "planned"
-```
 
 ## § 4.1 Scope
 

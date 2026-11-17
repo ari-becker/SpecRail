@@ -6,7 +6,6 @@ const Writer = std.Io.Writer;
 const cli = @import("cli.zig");
 const date = @import("date.zig");
 const diag = @import("diag.zig");
-const files = @import("files.zig");
 const project = @import("project.zig");
 const refs = @import("refs.zig");
 const spec = @import("spec.zig");
@@ -452,28 +451,16 @@ pub const usage =
 /// Runs `specrail check` and returns its exit status.
 pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
     const p = (try project.open(ctx)) orelse return 2;
-    var selected: ?[]const []const u8 = null;
-    if (opts.paths.len > 0) {
-        var sel: std.ArrayList([]const u8) = .empty;
-        for (opts.paths) |arg| {
-            const rel = (try project.projectPath(ctx.arena, ctx.cwd, p.root, arg)) orelse
-                return cli.usageError(ctx, "check", "'{s}' is outside the project", .{arg});
-            var matched = false;
-            for (p.spec_files) |f| {
-                if (std.mem.eql(u8, f.path, rel) or files.isUnder(f.path, rel)) {
-                    matched = true;
-                    if (!contains(sel.items, f.path)) try sel.append(ctx.arena, f.path);
-                }
-            }
-            if (!matched) return cli.usageError(
-                ctx,
-                "check",
-                "'{s}' is not a spec file or a directory of spec files",
-                .{arg},
-            );
-        }
-        selected = sel.items;
-    }
+    const selected: ?[]const []const u8 = switch (try project.selectSpecs(
+        ctx,
+        p,
+        opts.paths,
+        "check",
+    )) {
+        .refused => return 2,
+        .all => null,
+        .some => |paths| paths,
+    };
     const analysis = try analyze(
         ctx.arena,
         .{ .spec_files = p.spec_files, .source_files = p.source_files },

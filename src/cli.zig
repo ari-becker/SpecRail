@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const check = @import("check.zig");
 const context = @import("context.zig");
+const fmt_command = @import("fmt.zig");
 const init_command = @import("init.zig");
 const skill = @import("skill.zig");
 
@@ -56,6 +57,7 @@ pub const commands = [_]Command{
     .{ .name = "init", .summary = "Set up a project: specrail.toml and the spec root" },
     .{ .name = "check", .summary = "Verify specs, references and coverage" },
     .{ .name = "context", .summary = "Print what to read before working on a section" },
+    .{ .name = "fmt", .summary = "Renumber sections, rewrite references, normalize spec files" },
     .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
@@ -137,6 +139,7 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
     const rest = args.items[1..];
     if (std.mem.eql(u8, cmd, "check")) return runCheck(ctx, rest);
     if (std.mem.eql(u8, cmd, "context")) return runContext(ctx, rest);
+    if (std.mem.eql(u8, cmd, "fmt")) return runFmt(ctx, rest);
     if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
     if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
@@ -164,6 +167,28 @@ fn runInit(ctx: *Ctx, args: []const []const u8) !u8 {
         }
     }
     return init_command.run(ctx, opts);
+}
+
+fn runFmt(ctx: *Ctx, args: []const []const u8) !u8 {
+    var opts: fmt_command.Options = .{};
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(ctx.arena);
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(fmt_command.usage);
+            return 0;
+        }
+        if (std.mem.eql(u8, a, "--check")) {
+            opts.check = true;
+        } else if (std.mem.eql(u8, a, "--json")) {
+            opts.json = true;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return usageError(ctx, "fmt", "unknown option '{s}'", .{a});
+        } else try paths.append(ctx.arena, a);
+    }
+    if (opts.json and !opts.check) return usageError(ctx, "fmt", "--json needs --check", .{});
+    opts.paths = paths.items;
+    return fmt_command.run(ctx, opts);
 }
 
 fn runContext(ctx: *Ctx, args: []const []const u8) !u8 {

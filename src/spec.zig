@@ -44,6 +44,8 @@ pub const Dependency = struct {
 pub const Metadata = struct {
     /// Line of the opening fence.
     line: u32,
+    /// Line of the closing fence; 0 when the block is never closed.
+    close_line: u32 = 0,
     status: ?Status = null,
     due: ?date.Date = null,
     assigned: ?[]const u8 = null,
@@ -81,6 +83,14 @@ pub const SpecFile = struct {
     lines: []const []const u8,
     /// The lines of the file's context.
     context: Range,
+    /// 0-based index of the `---` separator, if the file has one.
+    separator: ?usize,
+    /// The file has a problem that keeps `specrail fmt` from rewriting it
+    /// safely: its section tree cannot be built, or a metadata block cannot
+    /// be read, or holds comments that rewriting would lose.
+    broken: bool,
+    /// Two sections share a number and a title.
+    duplicate: bool,
 };
 
 /// Parses a spec file and reports into `out` every problem that can be found
@@ -341,6 +351,8 @@ const Parser = struct {
     sections: std.ArrayList(Section) = .empty,
     /// Own prose of each section, as a range of line indices.
     prose: std.ArrayList(Range) = .empty,
+    broken: bool = false,
+    duplicate: bool = false,
 
     fn report(
         p: *Parser,
@@ -420,6 +432,9 @@ const Parser = struct {
             .sections = p.sections.items,
             .lines = texts,
             .context = .{ .start = 0, .end = ctx_end },
+            .separator = sep,
+            .broken = p.broken,
+            .duplicate = p.duplicate,
         };
     }
 
@@ -542,6 +557,7 @@ const Parser = struct {
             const a = switch (refs.parseAddress(l.heading, .required)) {
                 .ok => |a| a,
                 .err => |msg| {
+                    p.broken = true;
                     try p.err(
                         i,
                         1,
@@ -603,6 +619,7 @@ const Parser = struct {
             const key = try p.arena.print("{s}\x00{s}", .{ s.number, s.title });
             const gop = try seen.getOrPut(p.arena, key);
             if (gop.found_existing) {
+                p.duplicate = true;
                 try p.err(
                     s.line - 1,
                     1,
@@ -622,6 +639,7 @@ const Parser = struct {
     fn checkLevel(p: *Parser, idx: usize) Allocator.Error!void {
         const s = p.sections.items[idx];
         if (idx == 0 and s.level != 1) {
+            p.broken = true;
             try p.err(
                 s.line - 1,
                 1,
@@ -632,6 +650,7 @@ const Parser = struct {
         if (idx == 0) return;
         const prev = p.sections.items[idx - 1].level;
         if (s.level > prev + 1) {
+            p.broken = true;
             try p.err(
                 s.line - 1,
                 1,
@@ -677,6 +696,9 @@ const Parser = struct {
     /// `fences.end`.
     fn readMetadata(p: *Parser, fences: Range) Allocator.Error!Metadata {
         var m: Metadata = .{ .line = @intCast(fences.start + 1) };
+        if (fences.end < p.lines.len) {
+            m.close_line = @intCast(fences.end + 1);
+        } else p.broken = true;
         // The parsed document borrows keys and strings from this text, and the
         // metadata borrows from the document, so it is freed only on error.
         var buf: std.ArrayList(u8) = .empty;
@@ -690,11 +712,13 @@ const Parser = struct {
         const doc = switch (try toml.parse(p.arena, buf.items)) {
             .ok => |doc| doc,
             .err => |e| {
+                p.broken = true;
                 const at: diag.Position = .{ .line = base + e.line, .column = e.column };
                 try p.report(.err, at, "invalid metadata: {s}", .{e.message});
                 return m;
             },
         };
+        if (doc.comment_lines.len > 0) p.broken = true;
         for (doc.comment_lines) |cl| {
             try p.report(
                 .err,

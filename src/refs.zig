@@ -8,6 +8,8 @@ pub const section_sign = "§";
 
 /// A section address: the part of reference form after the path.
 pub const Address = struct {
+    /// The section sign as written: `§` or `%`.
+    sign: []const u8,
     number: []const u8,
     title: []const u8,
     /// True when `%` stood in for `§`.
@@ -24,6 +26,8 @@ pub const AddressResult = union(enum) {
 /// number and title.
 pub const Form = struct {
     path: []const u8,
+    /// The section sign as written: `§` or `%`.
+    sign: []const u8,
     number: []const u8,
     title: []const u8,
     alt_sign: bool,
@@ -73,13 +77,14 @@ pub fn startsWithSign(text: []const u8) bool {
 /// Parses `§ <number> <title>`. `%` may stand in for `§`.
 pub fn parseAddress(text: []const u8, title_rule: TitleRule) AddressResult {
     var rest = std.mem.trimStart(u8, text, blanks);
-    var alt = false;
-    if (std.mem.startsWith(u8, rest, section_sign)) {
-        rest = rest[section_sign.len..];
-    } else if (std.mem.startsWith(u8, rest, "%")) {
-        rest = rest[1..];
-        alt = true;
-    } else return .{ .err = "expected '§' (or '%') and a section number" };
+    const sign: []const u8 = if (std.mem.startsWith(u8, rest, section_sign))
+        rest[0..section_sign.len]
+    else if (std.mem.startsWith(u8, rest, "%"))
+        rest[0..1]
+    else
+        return .{ .err = "expected '§' (or '%') and a section number" };
+    const alt = sign.len == 1;
+    rest = rest[sign.len..];
     if (rest.len == 0 or (rest[0] != ' ' and rest[0] != '\t')) {
         return .{ .err = "expected a space and a section number after the section sign" };
     }
@@ -95,7 +100,7 @@ pub fn parseAddress(text: []const u8, title_rule: TitleRule) AddressResult {
     if (title.len == 0 and title_rule == .required) return .{
         .err = "expected a section title after the number",
     };
-    return .{ .ok = .{ .number = number, .title = title, .alt_sign = alt } };
+    return .{ .ok = .{ .sign = sign, .number = number, .title = title, .alt_sign = alt } };
 }
 
 /// Parses reference form, `<path> § <number> <title>`.
@@ -108,6 +113,7 @@ pub fn parseForm(text: []const u8, title_rule: TitleRule) FormResult {
         .ok => |a| .{
             .ok = .{
                 .path = t[0..end],
+                .sign = a.sign,
                 .number = a.number,
                 .title = a.title,
                 .alt_sign = a.alt_sign,
