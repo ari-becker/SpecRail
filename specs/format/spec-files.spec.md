@@ -10,9 +10,6 @@ that directory, the way a section's own prose is context for its children.
 ---
 
 # § 1 Discovery
-```toml
-status = "planned"
-```
 
 ## § 1.1 Spec files
 
@@ -20,12 +17,18 @@ specrail MUST treat a file found by the file scan as a spec file exactly when
 it is under the spec root and its name ends in `.spec.md`.
 
 ## § 1.2 Parent files
+```toml
+status = "planned"
+```
 
 specrail MUST treat a spec file named `<name>.spec.md` as the parent file of
 the directory `<name>` beside it, and `root.spec.md` directly in the spec root
 as the parent file of the spec root.
 
 ## § 1.3 Ancestor files
+```toml
+status = "planned"
+```
 
 The ancestor files of a spec file MUST be the parent files of the directories
 that contain it, from the spec root inward, excluding the spec file itself,
@@ -37,9 +40,6 @@ specrail MUST ignore files under the spec root whose names do not end in
 `.spec.md`, so that specs can sit next to images and other assets.
 
 # § 2 Context and sections
-```toml
-status = "planned"
-```
 
 The boundary between context and sections is an explicit Markdown thematic
 break, not a guess. Context can then use headings of any level, and a mistyped
@@ -80,9 +80,6 @@ with `§`, or with `%` followed by a space and a digit, because it is almost
 certainly a section heading on the wrong side of the separator.
 
 # § 3 Headings
-```toml
-status = "planned"
-```
 
 Heading recognition is deliberately narrower than CommonMark. specrail only
 needs to find section boundaries, and a narrow rule is easier for agents to
@@ -136,9 +133,6 @@ command arguments), it MUST compare them byte for byte after removing leading
 and trailing whitespace.
 
 # § 4 Numbering
-```toml
-status = "planned"
-```
 
 Numbers follow position and are maintained by `specrail fmt`. An author or
 agent can insert a section anywhere with any number and let the tool renumber
@@ -157,9 +151,6 @@ check MUST report as an error two sections in one file with the same number
 and the same title, because no reference can tell them apart.
 
 # § 5 Prose
-```toml
-status = "planned"
-```
 
 Requirements live only in leaves, so every requirement is something a test can
 claim. Everything above a leaf is context: it explains, but it does not
@@ -192,9 +183,6 @@ requirement keyword, so that rewording is not left until the code is already
 finished.
 
 # § 6 Section sign
-```toml
-status = "planned"
-```
 
 Some keyboards and terminals make `§` hard or impossible to type. `%` stands
 in for it on input, and `specrail fmt` turns it back into `§`, so committed
@@ -203,6 +191,9 @@ layout types it without Option or AltGr, and it means nothing special to
 shells, regular expressions, Markdown or TOML.
 
 ## § 6.1 Alternate section sign
+```toml
+status = "in-progress"
+```
 
 Wherever specrail reads a section sign (in section headings, reference lines,
 dependency entries and command arguments), it MUST accept `%` in its place and

@@ -11,9 +11,6 @@ claim_max_hours = 8
 ---
 
 # § 1 Project root
-```toml
-status = "planned"
-```
 
 ## § 1.1 Finding the project root
 
@@ -28,9 +25,6 @@ When no such directory exists, every command except `init`, `skill`,
 error suggesting `specrail init`.
 
 # § 2 Keys
-```toml
-status = "planned"
-```
 
 ## § 2.1 Spec root
 
@@ -71,9 +65,6 @@ and is not a positive integer.
 specrail MUST exit with status 2 when `specrail.toml` contains any other key.
 
 # § 3 File scan
-```toml
-status = "planned"
-```
 
 git already knows which files belong to the project, so specrail asks git
 instead of reimplementing ignore rules.

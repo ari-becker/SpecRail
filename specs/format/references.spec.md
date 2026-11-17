@@ -14,9 +14,6 @@ test "password login creates a session" { ... }
 ---
 
 # § 1 Syntax
-```toml
-status = "planned"
-```
 
 ## § 1.1 Reference line
 
@@ -46,9 +43,6 @@ but does not otherwise match the reference syntax, so that a mistyped
 reference cannot silently fail to count.
 
 # § 2 Scanning
-```toml
-status = "planned"
-```
 
 References are found by a plain line scan, the same way an agent finds them
 with `rg`. No programming language is parsed.
@@ -70,9 +64,6 @@ specrail MUST accept both `\n` and `\r\n` line endings, and MUST NOT include a
 `\r` in a parsed title.
 
 # § 3 Matching
-```toml
-status = "planned"
-```
 
 A reference matches a section when its path names the section's spec file and
 both its number and its title equal the section's. Anything less is reported,

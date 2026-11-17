@@ -58,9 +58,6 @@ specified with that command.
 ---
 
 # § 1 Arguments
-```toml
-status = "planned"
-```
 
 ## § 1.1 Help
 
@@ -72,12 +69,10 @@ Both MUST exit with status 0.
 
 Given an unknown command, an unknown option, or a missing or malformed
 argument, specrail MUST print the problem to stderr with a hint to run
-`specrail <command> --help`, and exit with status 2.
+`specrail <command> --help`, or `specrail --help` when the command itself is
+missing or unknown, and exit with status 2.
 
 # § 2 Color
-```toml
-status = "planned"
-```
 
 Color helps a person scan diagnostics in a terminal. Anywhere else, escape
 codes cost agents tokens and stop editors from recognizing the

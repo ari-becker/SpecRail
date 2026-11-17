@@ -5,9 +5,6 @@ be tested against. Metadata is TOML, the same format as `specrail.toml`.
 ---
 
 # § 1 Placement
-```toml
-status = "planned"
-```
 
 ## § 1.1 Recognizing a block
 
@@ -17,9 +14,6 @@ section's heading. Any other fenced code block, including a later `toml`
 block, MUST be treated as prose.
 
 # § 2 TOML subset
-```toml
-status = "planned"
-```
 
 Metadata blocks and `specrail.toml` share one deliberately small subset of
 TOML v1.0, so that a single hand-written parser serves the whole tool.
@@ -51,9 +45,6 @@ check MUST report a comment inside a metadata block as an error, because
 Extension keys can hold anything that would otherwise be a comment.
 
 # § 3 Keys
-```toml
-status = "planned"
-```
 
 ## § 3.1 Known keys
 
@@ -73,9 +64,6 @@ check MUST report any other key as an error, so that a misspelling such as
 `stauts` is caught.
 
 # § 4 Status
-```toml
-status = "planned"
-```
 
 ## § 4.1 Status values
 
@@ -89,9 +77,6 @@ otherwise the `status` of its nearest ancestor that has one, otherwise `done`.
 An explicit `done` lets a finished section sit under an unfinished parent.
 
 # § 5 Assignment
-```toml
-status = "planned"
-```
 
 `assigned` names who is working on a section. Paired with `assigned-until`, it
 is a claim that lapses on its own, so an agent that crashes or stalls stops
@@ -106,9 +91,6 @@ check MUST report an error when a metadata block has `assigned-until` but no
 `assigned`.
 
 # § 6 Dependencies
-```toml
-status = "planned"
-```
 
 Dependencies record that the work on one section waits on another. They are
 scheduling information: `specrail context` lists them by heading, and check

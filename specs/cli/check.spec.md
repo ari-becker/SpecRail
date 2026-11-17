@@ -6,9 +6,6 @@ runs tests.
 ---
 
 # § 1 Coverage
-```toml
-status = "planned"
-```
 
 ## § 1.1 Uncovered leaves
 
@@ -22,9 +19,6 @@ check MUST NOT require references to a leaf whose effective status is
 tests can be written before the code.
 
 # § 2 Scope
-```toml
-status = "planned"
-```
 
 ## § 2.1 Whole project
 
@@ -38,9 +32,6 @@ report only diagnostics located in those spec files, plus diagnostics for
 references and dependency entries that name sections in them.
 
 # § 3 Report
-```toml
-status = "planned"
-```
 
 check's output is its diagnostics. Unfinished work stays visible in it
 without failing the build, and is listed once per declaration rather than
@@ -95,9 +86,6 @@ Given `--json`, the `summary` object MUST contain the integer fields `errors`,
 `in_progress_leaves`.
 
 # § 4 Exit status
-```toml
-status = "planned"
-```
 
 ## § 4.1 Pass and fail
 
