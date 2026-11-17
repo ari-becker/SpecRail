@@ -25,8 +25,8 @@ spec in this repository.
   section for a limited time by pushing a tiny commit to `main`, so agents
   working in parallel do not build the same thing twice. An agent that a person
   drives from a terminal does not need it.
-- `specrail fmt`, `specrail mv` and the language server keep references
-  correct as specs are renumbered, retitled and moved.
+- `specrail fmt`, `specrail mv`, `specrail swap` and the language server keep
+  references correct as specs are renumbered, retitled, moved and reordered.
 
 specrail never runs tests and never judges whether a test is good enough. It
 only tracks that every requirement is claimed by at least one test.

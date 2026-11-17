@@ -46,8 +46,8 @@ test "password login is accepted" { ... }
 ```
 
 Cross-references between spec files in prose name the file only, never a
-section number: `specrail fmt` and `specrail mv` keep references and
-dependency entries up to date, but they do not edit prose.
+section number: `specrail fmt`, `specrail mv` and `specrail swap` keep
+references and dependency entries up to date, but they do not edit prose.
 
 Where `§` is hard to type, write `%` instead, in headings, references,
 dependency entries and command arguments alike. `specrail fmt` turns it back

@@ -9,6 +9,7 @@ const fmt_command = @import("fmt.zig");
 const init_command = @import("init.zig");
 const mv_command = @import("mv.zig");
 const skill = @import("skill.zig");
+const swap_command = @import("swap.zig");
 
 /// When diagnostics are colored, as chosen by `--color=<when>`.
 pub const ColorMode = enum { always, auto, never };
@@ -60,6 +61,7 @@ pub const commands = [_]Command{
     .{ .name = "context", .summary = "Print what to read before working on a section" },
     .{ .name = "fmt", .summary = "Renumber sections, rewrite references, normalize spec files" },
     .{ .name = "mv", .summary = "Move or retitle a section, spec file or directory" },
+    .{ .name = "swap", .summary = "Exchange two sections" },
     .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
@@ -143,6 +145,7 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "context")) return runContext(ctx, rest);
     if (std.mem.eql(u8, cmd, "fmt")) return runFmt(ctx, rest);
     if (std.mem.eql(u8, cmd, "mv")) return runMv(ctx, rest);
+    if (std.mem.eql(u8, cmd, "swap")) return runSwap(ctx, rest);
     if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
     if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
@@ -200,11 +203,22 @@ fn runMv(ctx: *Ctx, args: []const []const u8) !u8 {
             try ctx.stdout.writeAll(mv_command.usage);
             return 0;
         }
+    }
+    // The mv command reads its own options, --before and --after.
+    return mv_command.run(ctx, args);
+}
+
+fn runSwap(ctx: *Ctx, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(swap_command.usage);
+            return 0;
+        }
         if (std.mem.startsWith(u8, a, "--")) {
-            return usageError(ctx, "mv", "unknown option '{s}'", .{a});
+            return usageError(ctx, "swap", "unknown option '{s}'", .{a});
         }
     }
-    return mv_command.run(ctx, args);
+    return swap_command.run(ctx, args);
 }
 
 fn runContext(ctx: *Ctx, args: []const []const u8) !u8 {

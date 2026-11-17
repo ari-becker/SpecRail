@@ -30,13 +30,16 @@ names.
    inherits from an ancestor, so that it counts as done.
 5. Run `specrail check` and fix what it reports, until it passes.
 
-After adding, removing or reordering sections, run `specrail fmt`. It
-renumbers sections by position and rewrites every reference and dependency
-entry that names a renumbered section, so never renumber by hand. It also
-normalizes headings and metadata blocks. To retitle or move a section, or to
-move a spec file or a directory of specs, use `specrail mv`, giving sections
-in reference form, each quoted as one argument: it rewrites every reference
-and dependency entry to match. `specrail check` reports a reference that
+After adding or removing sections, run `specrail fmt`. It renumbers sections
+by position and rewrites every reference and dependency entry that names a
+renumbered section, so never renumber by hand. It also normalizes headings and
+metadata blocks. To retitle or move a section, or to move a spec file or a
+directory of specs, use `specrail mv`, giving sections in reference form, each
+quoted as one argument: it rewrites every reference and dependency entry to
+match. mv never overwrites a section, so a destination number must be the next
+free one under its parent. To put a section among others, use `specrail mv`
+with `--before` or `--after` and the section it should precede or follow; to
+exchange two sections, use `specrail swap`. `specrail check` reports a reference that
 nothing matches as dangling, and one where only the number or only the title
 still matches as stale, and shows the current headings.
 

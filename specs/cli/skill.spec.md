@@ -25,8 +25,9 @@ starts with the YAML front matter agent skills use, containing `name` and
 
 The skill MUST instruct the agent to run `specrail context` before working on
 a section, to add a reference line to each test that verifies a leaf, to run
-`specrail check` until it passes, and to use `specrail fmt` and `specrail mv`
-instead of editing section numbers, titles or references by hand.
+`specrail check` until it passes, and to use `specrail fmt`, `specrail mv` and
+`specrail swap` instead of editing section numbers, titles, references or the
+order of sections by hand.
 
 ## § 1.3 When to claim
 ```toml

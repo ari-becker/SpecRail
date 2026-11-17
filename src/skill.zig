@@ -53,6 +53,8 @@ test "the skill covers references and running check" {
     try expectSays("Run `specrail check`");
     try expectSays("run `specrail fmt`");
     try expectSays("use `specrail mv`");
+    try expectSays("`--before` or `--after`");
+    try expectSays("use `specrail swap`");
     try expectSays("until it passes");
 }
 

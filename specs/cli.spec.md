@@ -9,6 +9,7 @@ specrail is a single binary with no runtime dependencies other than `git`.
 | `specrail context` | Print what an agent needs to read before working on a section |
 | `specrail fmt` | Normalize spec files, renumber sections, rewrite references |
 | `specrail mv` | Rename or move a section or spec file, rewriting references |
+| `specrail swap` | Exchange two sections, rewriting references |
 | `specrail claim` | Take a section for a limited time by pushing a claim commit |
 | `specrail release` | Give up a claim early |
 | `specrail hook` | Git hooks that let only claim commits be pushed to the claim branch |

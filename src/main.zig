@@ -49,6 +49,7 @@ test {
     _ = @import("context.zig");
     _ = @import("date.zig");
     _ = @import("diag.zig");
+    _ = @import("edit.zig");
     _ = @import("files.zig");
     _ = @import("fmt.zig");
     _ = @import("init.zig");
@@ -58,5 +59,6 @@ test {
     _ = @import("rewrite.zig");
     _ = @import("skill.zig");
     _ = @import("spec.zig");
+    _ = @import("swap.zig");
     _ = @import("toml.zig");
 }
