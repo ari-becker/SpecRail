@@ -4,9 +4,6 @@ existing `specrail.toml`.
 ---
 
 # § 1 Initializing a project
-```toml
-status = "planned"
-```
 
 ## § 1.1 Create config
 

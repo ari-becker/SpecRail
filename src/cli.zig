@@ -4,6 +4,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const check = @import("check.zig");
+const init_command = @import("init.zig");
+const skill = @import("skill.zig");
 
 /// When diagnostics are colored, as chosen by `--color=<when>`.
 pub const ColorMode = enum { always, auto, never };
@@ -50,7 +52,9 @@ const Command = struct {
 
 /// Every command, as `specrail --help` lists them.
 pub const commands = [_]Command{
+    .{ .name = "init", .summary = "Set up a project: specrail.toml and the spec root" },
     .{ .name = "check", .summary = "Verify specs, references and coverage" },
+    .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
 fn writeHelp(w: *Io.Writer) Io.Writer.Error!void {
@@ -125,14 +129,49 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
         try writeHelp(ctx.stdout);
         return 0;
     }
-    if (std.mem.startsWith(u8, cmd, "-")) return usageError(
-        ctx,
-        null,
-        "unknown option '{s}'",
-        .{cmd},
-    );
-    if (std.mem.eql(u8, cmd, "check")) return runCheck(ctx, args.items[1..]);
+    if (std.mem.startsWith(u8, cmd, "-")) {
+        return usageError(ctx, null, "unknown option '{s}'", .{cmd});
+    }
+    const rest = args.items[1..];
+    if (std.mem.eql(u8, cmd, "check")) return runCheck(ctx, rest);
+    if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
+    if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
+}
+
+fn runInit(ctx: *Ctx, args: []const []const u8) !u8 {
+    var opts: init_command.Options = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(init_command.usage);
+            return 0;
+        }
+        if (std.mem.eql(u8, a, "--spec-root")) {
+            i += 1;
+            if (i == args.len) return usageError(ctx, "init", "--spec-root needs a directory", .{});
+            opts.spec_root = args[i];
+        } else if (std.mem.startsWith(u8, a, "--spec-root=")) {
+            opts.spec_root = a["--spec-root=".len..];
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            return usageError(ctx, "init", "unknown option '{s}'", .{a});
+        } else {
+            return usageError(ctx, "init", "unexpected argument '{s}'", .{a});
+        }
+    }
+    return init_command.run(ctx, opts);
+}
+
+fn runSkill(ctx: *Ctx, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(skill.usage);
+            return 0;
+        }
+        return usageError(ctx, "skill", "unexpected argument '{s}'", .{a});
+    }
+    return skill.run(ctx);
 }
 
 fn runCheck(ctx: *Ctx, args: []const []const u8) !u8 {
@@ -194,6 +233,14 @@ const Sandbox = struct {
     fn write(s: *Sandbox, path: []const u8, data: []const u8) !void {
         if (std.Io.Dir.path.dirname(path)) |dir| try s.tmp.dir.createDirPath(testing.io, dir);
         try s.tmp.dir.writeFile(testing.io, .{ .sub_path = path, .data = data });
+    }
+
+    fn read(s: *Sandbox, path: []const u8) ![]const u8 {
+        return s.tmp.dir.readFileAlloc(testing.io, path, s.arena_state.allocator(), .unlimited);
+    }
+
+    fn exists(s: *Sandbox, path: []const u8) bool {
+        return if (s.tmp.dir.access(testing.io, path, .{})) |_| true else |_| false;
     }
 
     const Output = struct {
@@ -385,4 +432,62 @@ test "spec files, excluded files and binary files are not scanned" {
     try s.write("t.zig", "// specrail: specs/a.spec.md § 1 One\n");
     const o = try s.runAtRoot(&.{"check"});
     try testing.expectEqual(@as(u8, 0), o.code);
+}
+
+// specrail: specs/cli/init.spec.md § 1.1 Create config
+// specrail: specs/cli/init.spec.md § 1.2 Root file
+test "init sets up a project that check accepts" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("spec_root = \"specs\"\n", try s.read("specrail.toml"));
+    try expectContains(try s.read("specs/root.spec.md"), "root of the spec tree");
+    try expectContains(o.stdout, "created specs/root.spec.md");
+    const checked = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 0), checked.code);
+}
+
+// specrail: specs/cli/init.spec.md § 1.2 Root file
+test "init keeps a root file that already exists" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try s.write("specs/root.spec.md", "Our own context.\n");
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("Our own context.\n", try s.read("specs/root.spec.md"));
+}
+
+// specrail: specs/cli/init.spec.md § 1.3 Spec root option
+test "init puts the spec root where --spec-root says" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{ "init", "--spec-root", "docs/specs/" });
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("spec_root = \"docs/specs\"\n", try s.read("specrail.toml"));
+    try testing.expect(s.exists("docs/specs/root.spec.md"));
+    try testing.expectEqual(@as(u8, 0), (try s.runAtRoot(&.{"check"})).code);
+    const outside = try s.runAtRoot(&.{ "init", "--spec-root=../elsewhere" });
+    try testing.expectEqual(@as(u8, 2), outside.code);
+}
+
+// specrail: specs/cli/init.spec.md § 1.4 Already initialized
+test "init changes nothing in a project that is already set up" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"other\"\n");
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try expectContains(o.stderr, "already has a specrail.toml");
+    try testing.expectEqualStrings("spec_root = \"other\"\n", try s.read("specrail.toml"));
+    try testing.expect(!s.exists("specs"));
+}
+
+// specrail: specs/cli/skill.spec.md § 1.1 Output
+test "skill prints the embedded skill, with or without a project" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{"skill"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings(skill.text, o.stdout);
 }

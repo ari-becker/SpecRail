@@ -62,7 +62,7 @@ fn wrongType(arena: Allocator, e: toml.Entry, expected: []const u8) Allocator.Er
 
 /// Normalizes a relative directory path; null when it is absolute or leaves
 /// the project root.
-fn normalizeDir(s: []const u8) ?[]const u8 {
+pub fn normalizeDir(s: []const u8) ?[]const u8 {
     if (std.Io.Dir.path.isAbsolute(s)) return null;
     var t = s;
     while (std.mem.startsWith(u8, t, "./")) t = t[2..];

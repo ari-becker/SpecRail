@@ -29,6 +29,9 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&run_tests.step);
+    // The test build leaves `main` out, so the executable is built too: a
+    // compile error there fails the tests as well.
+    test_step.dependOn(&exe.step);
 
     // The custom lint rules' own tests: a rule that flags nothing looks the same as
     // one that works, until it is tested.
