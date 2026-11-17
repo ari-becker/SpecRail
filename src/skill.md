@@ -33,8 +33,10 @@ names.
 After adding, removing or reordering sections, run `specrail fmt`. It
 renumbers sections by position and rewrites every reference and dependency
 entry that names a renumbered section, so never renumber by hand. It also
-normalizes headings and metadata blocks. When you retitle or move a section,
-update the references that name it. `specrail check` reports a reference that
+normalizes headings and metadata blocks. To retitle or move a section, or to
+move a spec file or a directory of specs, use `specrail mv`, giving sections
+in reference form, each quoted as one argument: it rewrites every reference
+and dependency entry to match. `specrail check` reports a reference that
 nothing matches as dangling, and one where only the number or only the title
 still matches as stale, and shows the current headings.
 

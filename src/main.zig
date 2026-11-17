@@ -52,8 +52,10 @@ test {
     _ = @import("files.zig");
     _ = @import("fmt.zig");
     _ = @import("init.zig");
+    _ = @import("mv.zig");
     _ = @import("project.zig");
     _ = @import("refs.zig");
+    _ = @import("rewrite.zig");
     _ = @import("skill.zig");
     _ = @import("spec.zig");
     _ = @import("toml.zig");

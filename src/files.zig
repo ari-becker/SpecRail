@@ -52,6 +52,31 @@ pub fn list(
     return .{ .ok = try out.toOwnedSlice(arena) };
 }
 
+/// The first part of `path`, a project path, that is a symbolic link: for
+/// `specs/linked/a.spec.md`, `specs/linked` when that is a link. Null when no
+/// part is one. Parts that do not exist are not links, and neither is anything
+/// below them.
+pub fn symlinkOn(
+    arena: Allocator,
+    io: Io,
+    root: []const u8,
+    path: []const u8,
+) Allocator.Error!?[]const u8 {
+    var parts = std.mem.splitScalar(u8, path, '/');
+    var end: usize = 0;
+    while (parts.next()) |part| {
+        end += part.len;
+        const prefix = path[0..end];
+        const at = try Io.Dir.path.join(arena, &.{ root, prefix });
+        const options: Io.Dir.StatFileOptions = .{ .follow_symlinks = false };
+        const st = Io.Dir.cwd().statFile(io, at, options) catch return null;
+        if (st.kind == .sym_link) return prefix;
+        // The separator before the next part.
+        end += 1;
+    }
+    return null;
+}
+
 /// True when `path` is `dir` or below it. "" is the project root.
 pub fn isUnder(path: []const u8, dir: []const u8) bool {
     if (dir.len == 0) return true;

@@ -50,6 +50,17 @@ pub const Sandbox = struct {
         try s.tmp.dir.writeFile(testing.io, .{ .sub_path = path, .data = data });
     }
 
+    /// Creates a symbolic link at `path` that points to `target`, creating the
+    /// directories it needs.
+    pub fn symlink(
+        s: *Sandbox,
+        target: []const u8,
+        path: []const u8,
+    ) (WriteError || Dir.SymLinkError)!void {
+        if (std.Io.Dir.path.dirname(path)) |dir| try s.tmp.dir.createDirPath(testing.io, dir);
+        try s.tmp.dir.symLink(testing.io, target, path, .{});
+    }
+
     /// Reads a file.
     pub fn read(s: *Sandbox, path: []const u8) Dir.ReadFileAllocError![]const u8 {
         return s.tmp.dir.readFileAlloc(testing.io, path, s.arena_state.allocator(), .unlimited);

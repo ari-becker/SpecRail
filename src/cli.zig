@@ -7,6 +7,7 @@ const check = @import("check.zig");
 const context = @import("context.zig");
 const fmt_command = @import("fmt.zig");
 const init_command = @import("init.zig");
+const mv_command = @import("mv.zig");
 const skill = @import("skill.zig");
 
 /// When diagnostics are colored, as chosen by `--color=<when>`.
@@ -58,6 +59,7 @@ pub const commands = [_]Command{
     .{ .name = "check", .summary = "Verify specs, references and coverage" },
     .{ .name = "context", .summary = "Print what to read before working on a section" },
     .{ .name = "fmt", .summary = "Renumber sections, rewrite references, normalize spec files" },
+    .{ .name = "mv", .summary = "Move or retitle a section, spec file or directory" },
     .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
@@ -140,6 +142,7 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "check")) return runCheck(ctx, rest);
     if (std.mem.eql(u8, cmd, "context")) return runContext(ctx, rest);
     if (std.mem.eql(u8, cmd, "fmt")) return runFmt(ctx, rest);
+    if (std.mem.eql(u8, cmd, "mv")) return runMv(ctx, rest);
     if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
     if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
@@ -189,6 +192,19 @@ fn runFmt(ctx: *Ctx, args: []const []const u8) !u8 {
     if (opts.json and !opts.check) return usageError(ctx, "fmt", "--json needs --check", .{});
     opts.paths = paths.items;
     return fmt_command.run(ctx, opts);
+}
+
+fn runMv(ctx: *Ctx, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(mv_command.usage);
+            return 0;
+        }
+        if (std.mem.startsWith(u8, a, "--")) {
+            return usageError(ctx, "mv", "unknown option '{s}'", .{a});
+        }
+    }
+    return mv_command.run(ctx, args);
 }
 
 fn runContext(ctx: *Ctx, args: []const []const u8) !u8 {

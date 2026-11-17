@@ -22,9 +22,6 @@ starts with the YAML front matter agent skills use, containing `name` and
 `description`.
 
 ## § 1.2 Workflow
-```toml
-status = "in-progress"
-```
 
 The skill MUST instruct the agent to run `specrail context` before working on
 a section, to add a reference line to each test that verifies a leaf, to run

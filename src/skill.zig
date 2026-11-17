@@ -52,6 +52,7 @@ test "the skill covers references and running check" {
     try expectSays("// specrail: <path> § <number> <title>");
     try expectSays("Run `specrail check`");
     try expectSays("run `specrail fmt`");
+    try expectSays("use `specrail mv`");
     try expectSays("until it passes");
 }
 

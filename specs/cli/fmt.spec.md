@@ -126,3 +126,9 @@ Given `--check --json`, fmt MUST instead print a single JSON object holding a
 `diagnostics` array with the same fields as `specrail check --json`, and a
 `summary` object whose integer field `files` counts the files that would
 change.
+
+## § 4.8 Symbolic links
+
+fmt MUST NOT follow symbolic links. Without `--check`, it MUST change nothing
+and exit with status 2 when any part of the path of a file it would write,
+below the project root, is a symbolic link.

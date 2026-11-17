@@ -93,6 +93,26 @@ pub const SpecFile = struct {
     duplicate: bool,
 };
 
+/// Numbers sections by position. Each call to `next` takes the heading level
+/// of the next section in the file and returns the number its position
+/// implies.
+pub const Numbering = struct {
+    counters: [7]u32 = @splat(0),
+
+    /// The number of the next section, which has heading level `level`.
+    pub fn next(n: *Numbering, arena: Allocator, level: u8) Allocator.Error![]const u8 {
+        n.counters[level] += 1;
+        for (level + 1..7) |d| n.counters[d] = 0;
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(arena);
+        for (n.counters[1 .. level + 1], 0..) |c, k| {
+            if (k > 0) try buf.append(arena, '.');
+            try buf.print(arena, "{d}", .{c});
+        }
+        return buf.toOwnedSlice(arena);
+    }
+};
+
 /// Parses a spec file and reports into `out` every problem that can be found
 /// in that file alone.
 pub fn parse(

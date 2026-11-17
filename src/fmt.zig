@@ -7,8 +7,10 @@ const Allocator = std.mem.Allocator;
 
 const cli = @import("cli.zig");
 const diag = @import("diag.zig");
+const files = @import("files.zig");
 const project = @import("project.zig");
 const refs = @import("refs.zig");
+const rewrite = @import("rewrite.zig");
 const spec = @import("spec.zig");
 const toml = @import("toml.zig");
 
@@ -80,61 +82,16 @@ const Renamer = struct {
         return if (only) |i| target.numbers[i] else form.number;
     }
 
-    /// `raw`, the text `form` was parsed from, with the section sign and the
-    /// number rewritten and nothing else; null when both are already right.
-    fn rewrite(
-        r: *const Renamer,
-        arena: Allocator,
-        raw: []const u8,
-        form: refs.Form,
-    ) Allocator.Error!?[]const u8 {
-        const new = r.number(form) orelse return null;
-        if (!form.alt_sign and std.mem.eql(u8, new, form.number)) return null;
-        const sign_at = offset(raw, form.sign);
-        const number_at = offset(raw, form.number);
-        return try std.mem.concat(arena, u8, &.{
-            raw[0..sign_at],
-            refs.section_sign,
-            raw[sign_at + form.sign.len .. number_at],
-            new,
-            raw[number_at + form.number.len ..],
-        });
+    /// What `form` should say: the number its section now has.
+    fn replace(context: *const anyopaque, form: refs.Form) ?rewrite.Replacement {
+        const r: *const Renamer = @ptrCast(@alignCast(context));
+        return .{ .number = r.number(form) orelse return null };
+    }
+
+    fn rewriter(r: *const Renamer) rewrite.Rewriter {
+        return .{ .context = r, .replaceFn = replace };
     }
 };
-
-/// Where `part`, a slice of `base`, starts in it.
-fn offset(base: []const u8, part: []const u8) usize {
-    return @intFromPtr(part.ptr) - @intFromPtr(base.ptr);
-}
-
-/// Splits `content` into lines that keep their line endings.
-fn splitLines(arena: Allocator, content: []const u8) Allocator.Error![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    errdefer out.deinit(arena);
-    var start: usize = 0;
-    while (start < content.len) {
-        const end = if (std.mem.findScalarPos(u8, content, start, '\n')) |i| i + 1 else content.len;
-        try out.append(arena, content[start..end]);
-        start = end;
-    }
-    return out.toOwnedSlice(arena);
-}
-
-fn ending(line: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, line, "\r\n")) return "\r\n";
-    if (std.mem.endsWith(u8, line, "\n")) return "\n";
-    return "";
-}
-
-fn body(line: []const u8) []const u8 {
-    return line[0 .. line.len - ending(line).len];
-}
-
-/// The line ending a file uses, judged by its first line.
-fn fileEnding(lines: []const []const u8) []const u8 {
-    if (lines.len > 0 and std.mem.eql(u8, ending(lines[0]), "\r\n")) return "\r\n";
-    return "\n";
-}
 
 fn allBlank(lines: []const []const u8) bool {
     for (lines) |l| {
@@ -147,39 +104,9 @@ fn allBlank(lines: []const []const u8) bool {
 fn positions(arena: Allocator, file: *const spec.SpecFile) Allocator.Error![]const []const u8 {
     const out = try arena.alloc([]const u8, file.sections.len);
     errdefer arena.free(out);
-    var counters: [7]u32 = @splat(0);
-    for (file.sections, 0..) |s, i| {
-        counters[s.level] += 1;
-        for (s.level + 1..7) |d| counters[d] = 0;
-        var buf: std.ArrayList(u8) = .empty;
-        errdefer buf.deinit(arena);
-        for (counters[1 .. s.level + 1], 0..) |c, k| {
-            if (k > 0) try buf.append(arena, '.');
-            try buf.print(arena, "{d}", .{c});
-        }
-        out[i] = try buf.toOwnedSlice(arena);
-    }
+    var numbering: spec.Numbering = .{};
+    for (file.sections, out) |s, *n| n.* = try numbering.next(arena, s.level);
     return out;
-}
-
-/// `s` as a TOML basic string.
-fn basicString(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(arena);
-    try out.append(arena, '"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try out.appendSlice(arena, "\\\""),
-            '\\' => try out.appendSlice(arena, "\\\\"),
-            '\n' => try out.appendSlice(arena, "\\n"),
-            '\r' => try out.appendSlice(arena, "\\r"),
-            '\t' => try out.appendSlice(arena, "\\t"),
-            0...8, 11, 12, 14...31, 127 => try out.print(arena, "\\u{x:0>4}", .{c}),
-            else => try out.append(arena, c),
-        }
-    }
-    try out.append(arena, '"');
-    return out.toOwnedSlice(arena);
 }
 
 /// Keys whose values fmt rewrites. Any other key keeps its value as written.
@@ -195,7 +122,7 @@ fn isKnown(key: []const u8) bool {
 /// Writes one spec file in canonical form.
 const Formatter = struct {
     arena: Allocator,
-    renamer: *const Renamer,
+    rewriter: rewrite.Rewriter,
     plan: Plan,
     /// The line ending the file uses.
     newline: []const u8,
@@ -233,7 +160,7 @@ const Formatter = struct {
             try f.out.print(
                 f.arena,
                 " § {s} {s}{s}",
-                .{ f.plan.numbers[si], s.title, ending(raw[i]) },
+                .{ f.plan.numbers[si], s.title, rewrite.ending(raw[i]) },
             );
             const m = s.metadata orelse continue;
             // The block starts on the line after its opening fence; blank lines
@@ -249,12 +176,12 @@ const Formatter = struct {
     /// is left with no keys. `fences` are the block's lines, fences included.
     fn block(f: *Formatter, si: usize, fences: []const []const u8) Allocator.Error!void {
         const lines = fences[1 .. fences.len - 1];
-        const last_ending = ending(fences[fences.len - 1]);
+        const last_ending = rewrite.ending(fences[fences.len - 1]);
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(f.arena);
         for (lines, 0..) |l, k| {
             if (k > 0) try text.appendSlice(f.arena, f.newline);
-            try text.appendSlice(f.arena, body(l));
+            try text.appendSlice(f.arena, rewrite.body(l));
         }
         const doc = switch (try toml.parse(f.arena, text.items)) {
             .ok => |d| d,
@@ -299,7 +226,9 @@ const Formatter = struct {
         if (std.mem.eql(u8, e.key, "dependencies") and e.value == .array) {
             return f.dependencies(e.value.array);
         }
-        if (isKnown(e.key) and e.value == .string) return basicString(f.arena, e.value.string);
+        if (isKnown(e.key) and e.value == .string) {
+            return rewrite.basicString(f.arena, e.value.string);
+        }
         return e.text;
     }
 
@@ -321,105 +250,12 @@ const Formatter = struct {
 
     fn dependency(f: *const Formatter, entry: []const u8) Allocator.Error![]const u8 {
         const rewritten = switch (refs.parseForm(entry, .required)) {
-            .ok => |form| (try f.renamer.rewrite(f.arena, entry, form)) orelse entry,
+            .ok => |form| (try f.rewriter.rewrite(f.arena, entry, form)) orelse entry,
             .err => entry,
         };
-        return basicString(f.arena, rewritten);
+        return rewrite.basicString(f.arena, rewritten);
     }
 };
-
-/// A dependency entry's string, as written, with its reference rewritten;
-/// null when it is already right.
-fn rewriteToken(arena: Allocator, r: *const Renamer, item: toml.Item) Allocator.Error!?[]const u8 {
-    const token = item.text;
-    const quoted = token.len >= 2 and (token[0] == '"' or token[0] == '\'');
-    if (quoted and std.mem.findScalar(u8, token, '\\') == null) {
-        const inner = token[1 .. token.len - 1];
-        const form = switch (refs.parseForm(inner, .required)) {
-            .ok => |form| form,
-            .err => return null,
-        };
-        const new = (try r.rewrite(arena, inner, form)) orelse return null;
-        return try std.mem.concat(arena, u8, &.{ token[0..1], new, token[token.len - 1 ..] });
-    }
-    const form = switch (refs.parseForm(item.value.string, .required)) {
-        .ok => |form| form,
-        .err => return null,
-    };
-    const new = (try r.rewrite(arena, item.value.string, form)) orelse return null;
-    return try basicString(arena, new);
-}
-
-/// A spec file fmt does not format, with the dependency entries that name
-/// formatted files rewritten in place; null when none change.
-fn rewriteDependencies(
-    arena: Allocator,
-    r: *const Renamer,
-    file: *const spec.SpecFile,
-    raw: [][]const u8,
-) Allocator.Error!?[]const u8 {
-    var changed = false;
-    for (file.sections) |s| {
-        const m = s.metadata orelse continue;
-        var text: std.ArrayList(u8) = .empty;
-        defer text.deinit(arena);
-        for (raw[m.line .. m.close_line - 1], 0..) |l, k| {
-            if (k > 0) try text.append(arena, '\n');
-            try text.appendSlice(arena, body(l));
-        }
-        const doc = switch (try toml.parse(arena, text.items)) {
-            .ok => |d| d,
-            .err => continue,
-        };
-        const deps = doc.get("dependencies") orelse continue;
-        if (deps.value != .array) continue;
-        items: for (deps.value.array) |item| {
-            if (item.value != .string) continue :items;
-            // TOML line 1 is the line after the opening fence.
-            const idx = m.line - 1 + item.line;
-            const at = item.column - 1;
-            const line_body = body(raw[idx]);
-            const fits = at + item.text.len <= line_body.len;
-            if (!fits or !std.mem.eql(
-                u8,
-                line_body[at..][0..item.text.len],
-                item.text,
-            )) continue :items;
-            const token = (try rewriteToken(arena, r, item)) orelse continue :items;
-            raw[idx] = try std.mem.concat(arena, u8, &.{
-                line_body[0..at],
-                token,
-                line_body[at + item.text.len ..],
-                ending(raw[idx]),
-            });
-            changed = true;
-        }
-    }
-    return if (changed) try std.mem.concat(arena, u8, raw) else null;
-}
-
-/// A source file with its reference lines rewritten; null when none change.
-fn rewriteReferences(
-    arena: Allocator,
-    r: *const Renamer,
-    content: []const u8,
-) Allocator.Error!?[]const u8 {
-    if (std.mem.find(u8, content, refs.marker) == null) return null;
-    const lines = try splitLines(arena, content);
-    var changed = false;
-    for (lines) |*line| {
-        const line_body = body(line.*);
-        const found = refs.scanLine(line_body) orelse continue;
-        const form = switch (found.result) {
-            .ok => |form| form,
-            .err => continue,
-        };
-        const new = (try r.rewrite(arena, line_body, form)) orelse continue;
-        line.* = try std.mem.concat(arena, u8, &.{ new, ending(line.*) });
-        changed = true;
-    }
-    return if (changed) try std.mem.concat(arena, u8, lines) else null;
-}
 
 fn contains(list: []const []const u8, item: []const u8) bool {
     for (list) |x| {
@@ -456,25 +292,26 @@ pub fn plan(
         try renamer.plans.put(arena, f.path, .{ .file = &parsed[i], .numbers = numbers });
     }
 
+    const rewriter = renamer.rewriter();
     var changes: std.ArrayList(Change) = .empty;
     errdefer changes.deinit(arena);
     for (spec_files, 0..) |f, i| {
         if (parsed[i].broken or parsed[i].duplicate) continue;
-        const raw = try splitLines(arena, f.content);
+        const raw = try rewrite.splitLines(arena, f.content);
         const after = if (renamer.plans.get(f.path)) |pl| formatted: {
             var formatter: Formatter = .{
                 .arena = arena,
-                .renamer = &renamer,
+                .rewriter = rewriter,
                 .plan = pl,
-                .newline = fileEnding(raw),
+                .newline = rewrite.fileEnding(raw),
             };
             break :formatted try formatter.format(raw);
-        } else (try rewriteDependencies(arena, &renamer, &parsed[i], raw)) orelse continue;
+        } else (try rewrite.rewriteDependencies(arena, rewriter, &parsed[i], raw)) orelse continue;
         if (std.mem.eql(u8, after, f.content)) continue;
         try changes.append(arena, .{ .path = f.path, .before = f.content, .after = after });
     }
     for (source_files) |f| {
-        const after = (try rewriteReferences(arena, &renamer, f.content)) orelse continue;
+        const after = (try rewrite.rewriteReferences(arena, rewriter, f.content)) orelse continue;
         try changes.append(arena, .{ .path = f.path, .before = f.content, .after = after });
     }
     return .{
@@ -506,6 +343,18 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
         .some => |paths| paths,
     };
     const outcome = try plan(ctx.arena, p.spec_files, p.source_files, selected);
+    if (!opts.check) {
+        // Every path is checked before anything is written: following a link
+        // could change files outside the project.
+        for (outcome.changes) |c| {
+            const found = try files.symlinkOn(ctx.arena, ctx.io, p.root, c.path);
+            const link = found orelse continue;
+            const msg = "specrail: {s} is a symbolic link, " ++
+                "and fmt does not follow symbolic links\n";
+            try ctx.stderr.print(msg, .{link});
+            return 2;
+        }
+    }
     var report: std.ArrayList(diag.Diagnostic) = .empty;
     defer report.deinit(ctx.arena);
     try report.appendSlice(ctx.arena, outcome.diagnostics);
@@ -1010,4 +859,27 @@ test "fmt --check --json prints one JSON object" {
         o.stdout,
     );
     try testing.expectEqual(@as(u8, 2), (try s.runAtRoot(&.{ "fmt", "--json" })).code);
+}
+
+// specrail: specs/cli/fmt.spec.md § 4.8 Symbolic links
+test "fmt refuses to write through a symbolic link" {
+    const reference = "// specrail: specs/a.spec.md § 2 One\n";
+    var outside = try sandbox.Sandbox.init();
+    defer outside.deinit();
+    try outside.write("t.zig", reference);
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"specs\"\n");
+    const misnumbered = "# § 2 One\n\nIt MUST work.\n";
+    try s.write("specs/a.spec.md", misnumbered);
+    const target = try std.Io.Dir.path.join(testing.allocator, &.{ outside.root, "t.zig" });
+    defer testing.allocator.free(target);
+    try s.symlink(target, "src/t.zig");
+    const o = try s.runAtRoot(&.{"fmt"});
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "src/t.zig is a symbolic link");
+    try testing.expectEqualStrings(misnumbered, try s.read("specs/a.spec.md"));
+    try testing.expectEqualStrings(reference, try outside.read("t.zig"));
+    // With --check nothing is written, so the link is no hazard.
+    try testing.expectEqual(@as(u8, 1), (try s.runAtRoot(&.{ "fmt", "--check" })).code);
 }
