@@ -132,3 +132,9 @@ change.
 fmt MUST NOT follow symbolic links. Without `--check`, it MUST change nothing
 and exit with status 2 when any part of the path of a file it would write,
 below the project root, is a symbolic link.
+
+## § 4.9 Failed writes
+
+Without `--check`, fmt MUST write the new content of every file it changes
+before it replaces any file. When it cannot write one, it MUST change nothing
+and exit with status 2.

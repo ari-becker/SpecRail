@@ -43,6 +43,7 @@ fn run(init: std.process.Init, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !
 }
 
 test {
+    _ = @import("changes.zig");
     _ = @import("check.zig");
     _ = @import("cli.zig");
     _ = @import("config.zig");

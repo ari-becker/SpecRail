@@ -140,14 +140,14 @@ fn movePath(e: *Editor, old_arg: []const u8, new_arg: []const u8) Error!void {
     } else {
         try planDirectory(e, old, new);
     }
-    for (e.moves.items) |mv| {
-        if (try e.exists(mv.new)) {
+    for (e.pending.moves.items) |mv| {
+        if (try e.pending.exists(mv.new)) {
             return e.stop(2, "{s} already exists; nothing was moved", .{mv.new});
         }
     }
     var paths: edit.Paths = .{};
     for (e.proj.spec_files) |f| {
-        const now = try e.finalPath(f.path);
+        const now = try e.pending.finalPath(f.path);
         if (now.ptr != f.path.ptr) try paths.moved.put(e.ctx.arena, f.path, now);
     }
     try e.rewriteAll(paths.rewriter(), &.{});
@@ -158,29 +158,30 @@ fn movePath(e: *Editor, old_arg: []const u8, new_arg: []const u8) Error!void {
 fn planFile(e: *Editor, old: []const u8, new: []const u8) Error!void {
     const arena = e.ctx.arena;
     if (e.by_path.get(old) == null) return e.stop(2, "there is no spec file {s}", .{old});
-    try e.moves.append(arena, .{ .old = old, .new = new });
+    try e.pending.moves.append(arena, .{ .old = old, .new = new });
     // The root file's directory is the spec root itself, which never moves.
     const root = e.proj.config.spec_root;
     const root_file = try std.Io.Dir.path.join(arena, &.{ root, "root.spec.md" });
     if (std.mem.eql(u8, old, root_file)) return;
     const old_dir = old[0 .. old.len - spec_suffix.len];
-    if (!try e.isDirectory(old_dir)) return;
+    if (!try e.pending.isDirectory(old_dir)) return;
     if (files.isUnder(new, old_dir)) {
         return e.misuse("{s} cannot move into {s}, which moves with it", .{ old, old_dir });
     }
-    try e.moves.append(arena, .{ .old = old_dir, .new = new[0 .. new.len - spec_suffix.len] });
+    const new_dir = new[0 .. new.len - spec_suffix.len];
+    try e.pending.moves.append(arena, .{ .old = old_dir, .new = new_dir });
 }
 
 /// Plans the move of a directory, and of its parent file when there is one.
 fn planDirectory(e: *Editor, old: []const u8, new: []const u8) Error!void {
     const arena = e.ctx.arena;
-    if (!try e.isDirectory(old)) return e.stop(2, "there is no directory {s}", .{old});
+    if (!try e.pending.isDirectory(old)) return e.stop(2, "there is no directory {s}", .{old});
     if (files.isUnder(new, old)) return e.misuse("{s} cannot move into itself", .{old});
-    try e.moves.append(arena, .{ .old = old, .new = new });
+    try e.pending.moves.append(arena, .{ .old = old, .new = new });
     const old_file = try std.mem.concat(arena, u8, &.{ old, spec_suffix });
     if (e.by_path.get(old_file) == null) return;
     const new_file = try std.mem.concat(arena, u8, &.{ new, spec_suffix });
-    try e.moves.append(arena, .{ .old = old_file, .new = new_file });
+    try e.pending.moves.append(arena, .{ .old = old_file, .new = new_file });
 }
 
 /// Checks the spec file a section moves to, and returns its index; null for
@@ -193,7 +194,7 @@ fn destination(e: *Editor, to: refs.Form) Error!?usize {
     if (!std.mem.endsWith(u8, to.path, spec_suffix)) {
         return e.misuse("{s} is not a spec file path", .{to.path});
     }
-    if (try e.exists(to.path)) {
+    if (try e.pending.exists(to.path)) {
         return e.stop(2, "{s} exists but is not a spec file mv can write", .{to.path});
     }
     return null;

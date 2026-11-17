@@ -1,14 +1,14 @@
 //! The engine behind `specrail mv` and `specrail swap`. Spec files become
-//! outlines whose sections can be taken out and put back elsewhere; every
+//! outlines whose sections can be taken out and put back elsewhere, and every
 //! reference and dependency entry that names a section or spec file that
-//! changed is rewritten to match; and the result is written safely: nothing
-//! changes until every new file content is written, and nothing is ever
-//! written through a symbolic link.
+//! changed is rewritten to match. The result is written through
+//! `changes.zig`, safely.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+const changes = @import("changes.zig");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const diag = @import("diag.zig");
@@ -22,20 +22,7 @@ const spec = @import("spec.zig");
 /// `Editor.status` holds its exit status.
 pub const Error = cli.Error || error{Stopped};
 
-/// A file or directory to move, by project path.
-pub const Move = struct {
-    old: []const u8,
-    new: []const u8,
-};
-
-/// A file to write: where it is now, where it will be once the moves are
-/// made, and its new content.
-pub const Write = struct {
-    /// Where the file is now; for a spec file being created, where it will be.
-    origin: []const u8,
-    path: []const u8,
-    content: []const u8,
-};
+const Write = changes.Write;
 
 /// What a reference names: a spec file, and a section in it.
 pub const Name = struct {
@@ -337,10 +324,8 @@ pub const Editor = struct {
     found: []diag.List,
     /// The index of each spec file, by path.
     by_path: std.StringHashMapUnmanaged(usize) = .empty,
-    /// The files and directories to move, in order.
-    moves: std.ArrayList(Move) = .empty,
-    /// The files to write once the moves are made.
-    writes: std.ArrayList(Write) = .empty,
+    /// The moves and writes planned so far.
+    pending: changes.Changes,
     /// The new address of each moved section, printed before the paths.
     addresses: std.ArrayList([]const u8) = .empty,
     /// The exit status, once the command has stopped.
@@ -357,6 +342,7 @@ pub const Editor = struct {
             .proj = proj,
             .specs = try ctx.arena.alloc(spec.SpecFile, n),
             .found = try ctx.arena.alloc(diag.List, n),
+            .pending = .{ .ctx = ctx, .root = proj.root, .command = command },
         };
         for (proj.spec_files, 0..) |f, i| {
             e.found[i] = .empty;
@@ -416,34 +402,6 @@ pub const Editor = struct {
     /// The outline of the spec file at `index`.
     pub fn outline(e: *const Editor, index: usize) Allocator.Error!Outline {
         return Outline.init(e.ctx.arena, &e.specs[index], e.proj.spec_files[index].content);
-    }
-
-    fn abs(e: *const Editor, path: []const u8) Allocator.Error![]const u8 {
-        return Io.Dir.path.join(e.ctx.arena, &.{ e.proj.root, path });
-    }
-
-    /// Whether anything is at the project path `path`.
-    pub fn exists(e: *const Editor, path: []const u8) Allocator.Error!bool {
-        const at = try e.abs(path);
-        _ = Io.Dir.cwd().statFile(e.ctx.io, at, .{}) catch return false;
-        return true;
-    }
-
-    /// Whether the project path `path` is a directory.
-    pub fn isDirectory(e: *const Editor, path: []const u8) Allocator.Error!bool {
-        const at = try e.abs(path);
-        const st = Io.Dir.cwd().statFile(e.ctx.io, at, .{}) catch return false;
-        return st.kind == .directory;
-    }
-
-    /// Where the file at `path` is once the moves are made.
-    pub fn finalPath(e: *const Editor, path: []const u8) Allocator.Error![]const u8 {
-        for (e.moves.items) |mv| {
-            if (files.isUnder(path, mv.old)) {
-                return std.mem.concat(e.ctx.arena, u8, &.{ mv.new, path[mv.old.len..] });
-            }
-        }
-        return path;
     }
 
     /// `text` parsed as a section in reference form, with its path
@@ -548,8 +506,9 @@ pub const Editor = struct {
         }
         for (e.proj.source_files) |f| {
             const after = (try rewrite.rewriteReferences(arena, rw, f.content)) orelse continue;
-            const final = try e.finalPath(f.path);
-            try e.writes.append(arena, .{ .origin = f.path, .path = final, .content = after });
+            const final = try e.pending.finalPath(f.path);
+            const w: Write = .{ .origin = f.path, .path = final, .content = after };
+            try e.pending.writes.append(arena, w);
         }
     }
 
@@ -572,128 +531,18 @@ pub const Editor = struct {
         if (e.by_path.get(path)) |i| {
             if (!e.rewritable(i)) return e.refuse(i);
         }
-        const final = try e.finalPath(path);
-        try e.writes.append(arena, .{ .origin = path, .path = final, .content = after });
+        const final = try e.pending.finalPath(path);
+        try e.pending.writes.append(arena, .{ .origin = path, .path = final, .content = after });
     }
 
-    /// Stops the command when any part of a path it would move, create or
-    /// write is a symbolic link, before anything changes: following one could
-    /// change files outside the project.
-    fn guard(e: *Editor) Error!void {
-        for (e.moves.items) |mv| {
-            try e.refuseLink(mv.old);
-            try e.refuseLink(mv.new);
-        }
-        for (e.writes.items) |w| {
-            try e.refuseLink(w.origin);
-            try e.refuseLink(w.path);
-        }
-    }
-
-    fn refuseLink(e: *Editor, path: []const u8) Error!void {
-        const link = (try files.symlinkOn(e.ctx.arena, e.ctx.io, e.proj.root, path)) orelse return;
-        const msg = "{s} is a symbolic link, and {s} does not follow symbolic links";
-        return e.stop(2, msg, .{ link, e.command });
-    }
-
-    /// Checks every path, stages every new file content, makes the moves,
-    /// puts the staged files in place, and prints what changed.
+    /// Makes the planned changes, then prints what changed.
     fn commit(e: *Editor) Error!void {
-        try e.guard();
-        const temps = try e.stage();
-        try e.apply(temps);
+        const status = try e.pending.make();
+        if (status != 0) {
+            e.status = status;
+            return error.Stopped;
+        }
         try e.report();
-    }
-
-    /// Writes the new content of every file to a new temporary file near
-    /// where the file is now, and returns their paths. When one cannot be
-    /// written, removes those already written and stops, so that nothing has
-    /// changed.
-    fn stage(e: *Editor) Error![]const []const u8 {
-        const temps = try e.ctx.arena.alloc([]const u8, e.writes.items.len);
-        for (e.writes.items, temps, 0..) |w, *t, i| {
-            t.* = try e.tempPath(w.origin, i);
-            const flags: Io.Dir.CreateFileOptions = .{
-                .exclusive = true,
-                .permissions = try e.permissionsOf(w.origin),
-            };
-            const options: Io.Dir.WriteFileOptions = .{
-                .sub_path = try e.abs(t.*),
-                .data = w.content,
-                .flags = flags,
-            };
-            Io.Dir.cwd().writeFile(e.ctx.io, options) catch |err| {
-                // A file already at the temporary path is not this command's.
-                const created = if (err == error.PathAlreadyExists) i else i + 1;
-                try e.discard(temps[0..created]);
-                const msg = "cannot write {s}: {s}; nothing was changed";
-                return e.stop(2, msg, .{ w.path, @errorName(err) });
-            };
-        }
-        return temps;
-    }
-
-    /// A temporary file for the `i`th write, in the nearest directory at or
-    /// above the directory of `origin` that exists, so that staging creates no
-    /// directories.
-    fn tempPath(e: *const Editor, origin: []const u8, i: usize) Allocator.Error![]const u8 {
-        var dir = Io.Dir.path.dirname(origin) orelse "";
-        // Each step drops one component from `dir`, so the loop ends.
-        while (dir.len > 0 and !try e.isDirectory(dir)) dir = Io.Dir.path.dirname(dir) orelse "";
-        const base = Io.Dir.path.basename(origin);
-        const name = try e.ctx.arena.print(".{s}.{d}.specrail-tmp", .{ base, i });
-        return Io.Dir.path.join(e.ctx.arena, &.{ dir, name });
-    }
-
-    /// The permissions of the file at `path`, or the default for a new file.
-    fn permissionsOf(e: *const Editor, path: []const u8) Allocator.Error!Io.File.Permissions {
-        const at = try e.abs(path);
-        const st = Io.Dir.cwd().statFile(e.ctx.io, at, .{}) catch return .default_file;
-        return st.permissions;
-    }
-
-    /// Removes the temporary files `temps`.
-    fn discard(e: *Editor, temps: []const []const u8) Error!void {
-        for (temps) |t| {
-            const at = try e.abs(t);
-            Io.Dir.cwd().deleteFile(e.ctx.io, at) catch |err| {
-                const msg = "specrail: cannot remove {s}: {s}\n";
-                try e.ctx.stderr.print(msg, .{ t, @errorName(err) });
-            };
-        }
-    }
-
-    /// Makes the moves, then puts each staged file in place. Renames are all
-    /// that is left to fail here.
-    fn apply(e: *Editor, temps: []const []const u8) Error!void {
-        const io = e.ctx.io;
-        const cwd = Io.Dir.cwd();
-        for (e.moves.items) |mv| {
-            const new = try e.abs(mv.new);
-            try e.makeParent(new);
-            cwd.rename(try e.abs(mv.old), cwd, new, io) catch |err| {
-                const msg = "cannot move {s} to {s}: {s}; the project is partly changed";
-                return e.stop(2, msg, .{ mv.old, mv.new, @errorName(err) });
-            };
-        }
-        for (e.writes.items, temps) |w, t| {
-            const to = try e.abs(w.path);
-            try e.makeParent(to);
-            // A staged file inside a moved directory moved with it.
-            const from = try e.abs(try e.finalPath(t));
-            cwd.rename(from, cwd, to, io) catch |err| {
-                const msg = "cannot replace {s}: {s}; the project is partly changed";
-                return e.stop(2, msg, .{ w.path, @errorName(err) });
-            };
-        }
-    }
-
-    /// Creates the directory that `at`, an absolute path, will be in.
-    fn makeParent(e: *Editor, at: []const u8) Error!void {
-        const dir = Io.Dir.path.dirname(at) orelse return;
-        Io.Dir.cwd().createDirPath(e.ctx.io, dir) catch |err| {
-            return e.stop(2, "cannot create {s}: {s}", .{ dir, @errorName(err) });
-        };
     }
 
     /// Prints the new address of each moved section, then, sorted, the new
@@ -706,11 +555,11 @@ pub const Editor = struct {
         const lists = [_][]const project.SourceFile{ e.proj.spec_files, e.proj.source_files };
         for (lists) |list| {
             for (list) |f| {
-                const now = try e.finalPath(f.path);
+                const now = try e.pending.finalPath(f.path);
                 if (now.ptr != f.path.ptr) try touched.append(arena, now);
             }
         }
-        for (e.writes.items) |w| try touched.append(arena, w.path);
+        for (e.pending.writes.items) |w| try touched.append(arena, w.path);
         std.mem.sort([]const u8, touched.items, {}, lessThan);
         for (touched.items, 0..) |path, i| {
             const repeat = i > 0 and std.mem.eql(u8, path, touched.items[i - 1]);

@@ -5,9 +5,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const changes = @import("changes.zig");
 const cli = @import("cli.zig");
 const diag = @import("diag.zig");
-const files = @import("files.zig");
 const project = @import("project.zig");
 const refs = @import("refs.zig");
 const rewrite = @import("rewrite.zig");
@@ -293,8 +293,8 @@ pub fn plan(
     }
 
     const rewriter = renamer.rewriter();
-    var changes: std.ArrayList(Change) = .empty;
-    errdefer changes.deinit(arena);
+    var planned: std.ArrayList(Change) = .empty;
+    errdefer planned.deinit(arena);
     for (spec_files, 0..) |f, i| {
         if (parsed[i].broken or parsed[i].duplicate) continue;
         const raw = try rewrite.splitLines(arena, f.content);
@@ -308,14 +308,14 @@ pub fn plan(
             break :formatted try formatter.format(raw);
         } else (try rewrite.rewriteDependencies(arena, rewriter, &parsed[i], raw)) orelse continue;
         if (std.mem.eql(u8, after, f.content)) continue;
-        try changes.append(arena, .{ .path = f.path, .before = f.content, .after = after });
+        try planned.append(arena, .{ .path = f.path, .before = f.content, .after = after });
     }
     for (source_files) |f| {
         const after = (try rewrite.rewriteReferences(arena, rewriter, f.content)) orelse continue;
-        try changes.append(arena, .{ .path = f.path, .before = f.content, .after = after });
+        try planned.append(arena, .{ .path = f.path, .before = f.content, .after = after });
     }
     return .{
-        .changes = try changes.toOwnedSlice(arena),
+        .changes = try planned.toOwnedSlice(arena),
         .diagnostics = try problems.toOwnedSlice(arena),
     };
 }
@@ -344,16 +344,13 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
     };
     const outcome = try plan(ctx.arena, p.spec_files, p.source_files, selected);
     if (!opts.check) {
-        // Every path is checked before anything is written: following a link
-        // could change files outside the project.
+        var pending: changes.Changes = .{ .ctx = ctx, .root = p.root, .command = "fmt" };
         for (outcome.changes) |c| {
-            const found = try files.symlinkOn(ctx.arena, ctx.io, p.root, c.path);
-            const link = found orelse continue;
-            const msg = "specrail: {s} is a symbolic link, " ++
-                "and fmt does not follow symbolic links\n";
-            try ctx.stderr.print(msg, .{link});
-            return 2;
+            const w: changes.Write = .{ .origin = c.path, .path = c.path, .content = c.after };
+            try pending.writes.append(ctx.arena, w);
         }
+        const status = try pending.make();
+        if (status != 0) return status;
     }
     var report: std.ArrayList(diag.Diagnostic) = .empty;
     defer report.deinit(ctx.arena);
@@ -366,12 +363,6 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
             .severity = if (opts.check) .err else .note,
             .message = if (opts.check) "not formatted; run specrail fmt" else "formatted",
         });
-        if (opts.check) continue;
-        const abs = try std.Io.Dir.path.join(ctx.arena, &.{ p.root, c.path });
-        std.Io.Dir.cwd().writeFile(ctx.io, .{ .sub_path = abs, .data = c.after }) catch |e| {
-            try ctx.stderr.print("specrail: cannot write {s}: {s}\n", .{ c.path, @errorName(e) });
-            return 2;
-        };
     }
     diag.sort(report.items);
     var errors: u32 = 0;
@@ -882,4 +873,45 @@ test "fmt refuses to write through a symbolic link" {
     try testing.expectEqualStrings(reference, try outside.read("t.zig"));
     // With --check nothing is written, so the link is no hazard.
     try testing.expectEqual(@as(u8, 1), (try s.runAtRoot(&.{ "fmt", "--check" })).code);
+}
+
+// specrail: specs/cli/fmt.spec.md § 4.9 Failed writes
+test "when a file cannot be written, fmt changes nothing and cleans up" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"specs\"\n");
+    const misnumbered = "# § 2 One\n\nIt MUST work.\n";
+    try s.write("specs/a.spec.md", misnumbered);
+    const reference = "// specrail: specs/a.spec.md § 2 One\n";
+    try s.write("src/t.zig", reference);
+    // The spec file is written first, and then src/t.zig. Something already
+    // at src/t.zig's temporary path makes the second write fail after the
+    // first is staged.
+    try s.write("src/.t.zig.1.specrail-tmp/blocker", "");
+    const o = try s.runAtRoot(&.{"fmt"});
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "cannot write src/t.zig");
+    try sandbox.expectContains(o.stderr, "nothing was changed");
+    try testing.expectEqualStrings(misnumbered, try s.read("specs/a.spec.md"));
+    try testing.expectEqualStrings(reference, try s.read("src/t.zig"));
+    try testing.expect(!s.exists("specs/.a.spec.md.0.specrail-tmp"));
+    try testing.expect(s.exists("src/.t.zig.1.specrail-tmp/blocker"));
+}
+
+// specrail: specs/cli/fmt.spec.md § 4.9 Failed writes
+test "fmt keeps the permissions of the files it rewrites" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"specs\"\n");
+    try s.write("specs/a.spec.md", "# § 2 One\n\nIt MUST work.\n");
+    try s.write("run.sh", "#!/bin/sh\n# specrail: specs/a.spec.md § 2 One\n");
+    const executable: std.Io.File.Permissions = .fromMode(0o755);
+    try s.tmp.dir.setFilePermissions(testing.io, "run.sh", executable, .{});
+    try testing.expectEqual(@as(u8, 0), (try s.runAtRoot(&.{"fmt"})).code);
+    try testing.expectEqualStrings(
+        "#!/bin/sh\n# specrail: specs/a.spec.md § 1 One\n",
+        try s.read("run.sh"),
+    );
+    const st = try s.tmp.dir.statFile(testing.io, "run.sh", .{});
+    try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(st.permissions.toMode() & 0o777)));
 }
