@@ -30,6 +30,8 @@ pub fn run(ctx: *cli.Ctx) cli.Error!u8 {
 
 const testing = std.testing;
 
+const sandbox = @import("sandbox.zig");
+
 fn expectSays(needle: []const u8) !void {
     if (std.mem.find(u8, text, needle) == null) {
         std.debug.print("the skill does not say '{s}'\n", .{needle});
@@ -68,4 +70,13 @@ test "no line of the skill reads as a reference" {
     defer arena_state.deinit();
     const found = try refs.scanText(arena_state.allocator(), text);
     try testing.expectEqual(@as(usize, 0), found.len);
+}
+
+// specrail: specs/cli/skill.spec.md § 1.1 Output
+test "skill prints the embedded skill, with or without a project" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{"skill"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings(text, o.stdout);
 }

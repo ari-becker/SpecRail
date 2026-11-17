@@ -124,3 +124,58 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
     if (root_created) try ctx.stdout.print("created {s}\n", .{root_path});
     return 0;
 }
+
+// ---------------------------------------------------------------- tests
+
+const testing = std.testing;
+
+const sandbox = @import("sandbox.zig");
+
+// specrail: specs/cli/init.spec.md § 1.1 Create config
+// specrail: specs/cli/init.spec.md § 1.2 Root file
+test "init sets up a project that check accepts" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("spec_root = \"specs\"\n", try s.read("specrail.toml"));
+    try sandbox.expectContains(try s.read("specs/root.spec.md"), "root of the spec tree");
+    try sandbox.expectContains(o.stdout, "created specs/root.spec.md");
+    const checked = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 0), checked.code);
+}
+
+// specrail: specs/cli/init.spec.md § 1.2 Root file
+test "init keeps a root file that already exists" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specs/root.spec.md", "Our own context.\n");
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("Our own context.\n", try s.read("specs/root.spec.md"));
+}
+
+// specrail: specs/cli/init.spec.md § 1.3 Spec root option
+test "init puts the spec root where --spec-root says" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{ "init", "--spec-root", "docs/specs/" });
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("spec_root = \"docs/specs\"\n", try s.read("specrail.toml"));
+    try testing.expect(s.exists("docs/specs/root.spec.md"));
+    try testing.expectEqual(@as(u8, 0), (try s.runAtRoot(&.{"check"})).code);
+    const outside = try s.runAtRoot(&.{ "init", "--spec-root=../elsewhere" });
+    try testing.expectEqual(@as(u8, 2), outside.code);
+}
+
+// specrail: specs/cli/init.spec.md § 1.4 Already initialized
+test "init changes nothing in a project that is already set up" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"other\"\n");
+    const o = try s.runAtRoot(&.{"init"});
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "already has a specrail.toml");
+    try testing.expectEqualStrings("spec_root = \"other\"\n", try s.read("specrail.toml"));
+    try testing.expect(!s.exists("specs"));
+}

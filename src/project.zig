@@ -130,6 +130,12 @@ pub fn projectPath(
     return if (inside) abs[root.len + 1 ..] else null;
 }
 
+// ---------------------------------------------------------------- tests
+
+const testing = std.testing;
+
+const sandbox = @import("sandbox.zig");
+
 test "command-line paths become project paths" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -145,4 +151,69 @@ test "command-line paths become project paths" {
     try std.testing.expectEqualStrings("", (try projectPath(arena, "/p/specs", "/p", "..")).?);
     try std.testing.expect((try projectPath(arena, "/p", "/p", "../q")) == null);
     try std.testing.expect((try projectPath(arena, "/p", "/p", "/px/a")) == null);
+}
+
+// specrail: specs/config.spec.md § 1.2 No project root
+test "without specrail.toml, commands exit 2 and suggest init" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    const o = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "specrail init");
+}
+
+// specrail: specs/config.spec.md § 1.1 Finding the project root
+test "commands find the project root from a subdirectory" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.passing();
+    const o = try s.runIn("src", &.{ "check", "../specs/a.spec.md" }, .{});
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try sandbox.expectContains(o.stdout, "1/1 done leaves covered");
+}
+
+// specrail: specs/config.spec.md § 3.1 Listed files
+test "only files git lists are scanned" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"specs\"\n");
+    try s.write("specs/a.spec.md", "# § 1 One\n\nIt MUST work.\n# § 2 Two\n\nIt MUST work.\n");
+    try s.write(".gitignore", "ignored/\n");
+    try s.write("tracked.zig", "// specrail: specs/a.spec.md § 1 One\n");
+    try s.git(&.{ "git", "add", "tracked.zig" });
+    try s.write("ignored/t.zig", "// specrail: specs/a.spec.md § 2 Two\n");
+    const o = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 1), o.code);
+    try sandbox.expectContains(o.stdout, "§ 2 Two is not covered");
+    try sandbox.expectContains(o.stdout, "1/2 done leaves covered");
+}
+
+// specrail: specs/config.spec.md § 3.2 Without git
+test "outside a git work tree, commands exit 2 with git's reason" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.passing();
+    var env = std.process.Environ.Map.init(testing.allocator);
+    defer env.deinit();
+    try env.put("GIT_DIR", "/nonexistent/specrail-test");
+    const o = try s.runIn("", &.{"check"}, .{ .git_env = &env });
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "not a git repository");
+}
+
+// specrail: specs/format/references.spec.md § 2.1 Scanned files
+// specrail: specs/format/references.spec.md § 2.2 Binary files
+test "spec files, excluded files and binary files are not scanned" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.write("specrail.toml", "spec_root = \"specs\"\nexclude = [\"docs/**\"]\n");
+    try s.write(
+        "specs/a.spec.md",
+        "# § 1 One\n\nIt MUST work.\n\n```\n// specrail: specs/nope.spec.md § 1 Example\n```\n",
+    );
+    try s.write("docs/guide.md", "// specrail: specs/nope.spec.md § 1 Example\n");
+    try s.write("blob.bin", "\x00// specrail: specs/nope.spec.md § 1 Example\n");
+    try s.write("t.zig", "// specrail: specs/a.spec.md § 1 One\n");
+    const o = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 0), o.code);
 }

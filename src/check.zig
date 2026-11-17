@@ -488,6 +488,8 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
 
 const testing = std.testing;
 
+const sandbox = @import("sandbox.zig");
+
 /// The tests' clock: noon UTC on 2026-11-17.
 const test_now: i64 = 20774 * 86400 + 12 * 3600;
 
@@ -769,13 +771,9 @@ test "the text output ends with a summary line" {
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try writeText(&out.writer, try c.report(null, false), false);
-    try testing.expect(
-        std.mem.endsWith(
-            u8,
-            out.written(),
-            "\ncheck: 1 error, 0 warnings; 0/1 done leaves covered; 1 planned, 0 in progress\n",
-        ),
-    );
+    const summary = "\ncheck: 1 error, 0 warnings; 0/1 done leaves covered; 1 planned, 0 in " ++
+        "progress\n";
+    try testing.expect(std.mem.endsWith(u8, out.written(), summary));
 }
 
 // specrail: specs/cli/check.spec.md § 3.7 JSON output
@@ -817,4 +815,23 @@ test "warnings can be reported as errors" {
     try testing.expectEqual(@as(u32, 1), strict.stats.errors);
     try testing.expectEqual(@as(u32, 0), strict.stats.warnings);
     try testing.expectEqual(diag.Severity.err, strict.diagnostics[0].severity);
+}
+
+// specrail: specs/cli/check.spec.md § 4.1 Pass and fail
+test "check exits 0 without errors and 1 with errors" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try s.passing();
+    try s.write("specs/w.spec.md", "# § 1 Draft\n```toml\nstatus = \"planned\"\n```\nTBD.\n");
+    const ok = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 0), ok.code);
+    try sandbox.expectContains(ok.stdout, "warning:");
+    try sandbox.expectContains(ok.stdout, "note:");
+    try s.write("specs/b.spec.md", "# § 1 Uncovered\n\nIt MUST be reported.\n");
+    const failing = try s.runAtRoot(&.{"check"});
+    try testing.expectEqual(@as(u8, 1), failing.code);
+    try sandbox.expectContains(
+        failing.stdout,
+        "specs/b.spec.md:1:1: error: § 1 Uncovered is not covered",
+    );
 }

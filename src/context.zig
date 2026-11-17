@@ -73,9 +73,9 @@ pub fn run(ctx: *cli.Ctx, args: []const []const u8) cli.Error!u8 {
     var pr: Printer = .{ .out = ctx.stdout };
 
     if (std.mem.findAny(u8, address, " \t") == null) {
-        const file = an.file(
-            address,
-        ) orelse return missing(ctx, "there is no spec file {s}", .{address});
+        const file = an.file(address) orelse {
+            return missing(ctx, "there is no spec file {s}", .{address});
+        };
         try writeAncestry(ctx.arena, &pr, an, p.config.spec_root, file);
         try writeOutline(&pr, file);
         return 0;
@@ -89,9 +89,9 @@ pub fn run(ctx: *cli.Ctx, args: []const []const u8) cli.Error!u8 {
         ),
         .ok => |f| f,
     };
-    const file = an.file(
-        form.path,
-    ) orelse return missing(ctx, "there is no spec file {s}", .{form.path});
+    const file = an.file(form.path) orelse {
+        return missing(ctx, "there is no spec file {s}", .{form.path});
+    };
     const index = for (file.sections, 0..) |s, i| {
         if (std.mem.eql(u8, s.number, form.number)) break i;
     } else return missing(ctx, "{s} has no § {s}", .{ form.path, form.number });
@@ -206,11 +206,8 @@ fn writeVerifiers(
     for (an.references) |r| {
         if (!std.mem.eql(u8, r.form.path, file.path)) continue;
         const n = r.form.number;
-        const below = n.len > number.len and std.mem.startsWith(
-            u8,
-            n,
-            number,
-        ) and n[number.len] == '.';
+        const below = n.len > number.len and n[number.len] == '.' and
+            std.mem.startsWith(u8, n, number);
         if (std.mem.eql(u8, n, number) or below) try found.append(arena, r);
     }
     if (found.items.len == 0) return;
@@ -218,4 +215,172 @@ fn writeVerifiers(
     try pr.gap();
     try pr.out.writeAll("Verified by:\n");
     for (found.items) |r| try pr.out.print("- {s}:{d}\n", .{ r.path, r.line });
+}
+
+// ---------------------------------------------------------------- tests
+
+const testing = std.testing;
+
+const sandbox = @import("sandbox.zig");
+
+/// A project with a root file, a parent file, and nested sections, for `context`.
+fn contextProject(s: *sandbox.Sandbox) !void {
+    try s.write("specrail.toml", "spec_root = \"specs\"\n");
+    try s.write("specs/root.spec.md", "Root context.\n");
+    try s.write("specs/auth.spec.md",
+        \\Auth context.
+        \\
+        \\---
+        \\
+        \\# § 1 Auth wide
+        \\
+        \\Every endpoint MUST be rate limited.
+        \\
+    );
+    try s.write("specs/auth/login.spec.md",
+        \\Login context.
+        \\
+        \\---
+        \\
+        \\# § 1 Login
+        \\```toml
+        \\dependencies = ["specs/auth.spec.md § 1 Auth wide"]
+        \\```
+        \\
+        \\Login parent prose.
+        \\
+        \\## § 1.1 Providers
+        \\
+        \\Providers prose.
+        \\
+        \\### § 1.1.1 Google
+        \\
+        \\It MUST accept Google.
+        \\
+        \\## § 1.2 Password
+        \\
+        \\It MUST accept a password.
+        \\
+    );
+    try s.write("src/a_test.zig",
+        \\// specrail: specs/auth/login.spec.md § 1.2 Password
+        \\test "password" {}
+        \\// specrail: specs/auth/login.spec.md § 1.1.1 Google
+        \\test "google" {}
+        \\
+    );
+}
+
+// specrail: specs/cli/context.spec.md § 2.1 Ancestor files
+// specrail: specs/cli/context.spec.md § 2.2 File context
+// specrail: specs/cli/context.spec.md § 2.3 Ancestors
+// specrail: specs/cli/context.spec.md § 2.4 The section and its subtree
+// specrail: specs/cli/context.spec.md § 2.5 Source markers
+// specrail: specs/cli/context.spec.md § 2.6 Dependencies
+// specrail: specs/cli/context.spec.md § 2.7 Verifying tests
+test "context prints from the most general context down to the section" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try contextProject(&s);
+    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md", "§", "1.1" });
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings(
+        \\<!-- specs/root.spec.md:1 -->
+        \\Root context.
+        \\
+        \\<!-- specs/auth.spec.md:1 -->
+        \\Auth context.
+        \\
+        \\<!-- specs/auth/login.spec.md:1 -->
+        \\Login context.
+        \\
+        \\<!-- specs/auth/login.spec.md:5 -->
+        \\# § 1 Login
+        \\```toml
+        \\dependencies = ["specs/auth.spec.md § 1 Auth wide"]
+        \\```
+        \\
+        \\Login parent prose.
+        \\
+        \\<!-- specs/auth/login.spec.md:12 -->
+        \\## § 1.1 Providers
+        \\
+        \\Providers prose.
+        \\
+        \\### § 1.1.1 Google
+        \\
+        \\It MUST accept Google.
+        \\
+        \\Dependencies:
+        \\- specs/auth.spec.md § 1 Auth wide (done)
+        \\
+        \\Verified by:
+        \\- src/a_test.zig:3
+        \\
+    , o.stdout);
+}
+
+// specrail: specs/cli/context.spec.md § 1.1 Section address
+// specrail: specs/format/spec-files.spec.md § 6.1 Alternate section sign
+test "context takes a section in reference form, with or without its title" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try contextProject(&s);
+    const whole = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 1.2 Password" });
+    try testing.expectEqual(@as(u8, 0), whole.code);
+    try sandbox.expectContains(whole.stdout, "It MUST accept a password.");
+    const split = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md", "%", "1.2" });
+    try testing.expectEqualStrings(whole.stdout, split.stdout);
+}
+
+// specrail: specs/cli/context.spec.md § 1.2 Title check
+test "context refuses an address whose title has changed" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try contextProject(&s);
+    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 1.2 Passphrase" });
+    try testing.expectEqual(@as(u8, 1), o.code);
+    try testing.expectEqualStrings("", o.stdout);
+    try sandbox.expectContains(o.stderr, "stale address");
+    try sandbox.expectContains(o.stderr, "now § 1.2 Password");
+}
+
+// specrail: specs/cli/context.spec.md § 1.3 Unknown section
+test "context names an address that matches nothing" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try contextProject(&s);
+    const no_file = try s.runAtRoot(&.{ "context", "specs/nope.spec.md § 1" });
+    try testing.expectEqual(@as(u8, 1), no_file.code);
+    try testing.expectEqualStrings("", no_file.stdout);
+    try sandbox.expectContains(no_file.stderr, "there is no spec file specs/nope.spec.md");
+    const no_section = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 9" });
+    try testing.expectEqual(@as(u8, 1), no_section.code);
+    try sandbox.expectContains(no_section.stderr, "specs/auth/login.spec.md has no § 9");
+}
+
+// specrail: specs/cli/context.spec.md § 1.4 Whole file
+test "context on a spec file prints its context and an outline" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try contextProject(&s);
+    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md" });
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings(
+        \\<!-- specs/root.spec.md:1 -->
+        \\Root context.
+        \\
+        \\<!-- specs/auth.spec.md:1 -->
+        \\Auth context.
+        \\
+        \\<!-- specs/auth/login.spec.md:1 -->
+        \\Login context.
+        \\
+        \\<!-- specs/auth/login.spec.md:5 -->
+        \\# § 1 Login
+        \\## § 1.1 Providers
+        \\### § 1.1.1 Google
+        \\## § 1.2 Password
+        \\
+    , o.stdout);
 }

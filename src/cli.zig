@@ -215,120 +215,25 @@ fn runCheck(ctx: *Ctx, args: []const []const u8) !u8 {
 
 const testing = std.testing;
 
-/// A throwaway git repository with a specrail project in it.
-const Sandbox = struct {
-    tmp: testing.TmpDir,
-    arena_state: std.heap.ArenaAllocator,
-    root: []const u8,
-
-    fn init() !Sandbox {
-        var s: Sandbox = .{
-            .tmp = testing.tmpDir(.{}),
-            .arena_state = .init(testing.allocator),
-            .root = undefined,
-        };
-        s.root = try s.tmp.dir.realPathFileAlloc(testing.io, ".", s.arena_state.allocator());
-        try s.git(&.{ "git", "init", "-q" });
-        return s;
-    }
-
-    fn deinit(s: *Sandbox) void {
-        s.tmp.cleanup();
-        s.arena_state.deinit();
-    }
-
-    fn git(s: *Sandbox, argv: []const []const u8) !void {
-        const r = try std.process.run(
-            s.arena_state.allocator(),
-            testing.io,
-            .{ .argv = argv, .cwd = .{ .path = s.root } },
-        );
-        if (!r.term.success()) return error.GitFailed;
-    }
-
-    fn write(s: *Sandbox, path: []const u8, data: []const u8) !void {
-        if (std.Io.Dir.path.dirname(path)) |dir| try s.tmp.dir.createDirPath(testing.io, dir);
-        try s.tmp.dir.writeFile(testing.io, .{ .sub_path = path, .data = data });
-    }
-
-    fn read(s: *Sandbox, path: []const u8) ![]const u8 {
-        return s.tmp.dir.readFileAlloc(testing.io, path, s.arena_state.allocator(), .unlimited);
-    }
-
-    fn exists(s: *Sandbox, path: []const u8) bool {
-        return if (s.tmp.dir.access(testing.io, path, .{})) |_| true else |_| false;
-    }
-
-    const Output = struct {
-        code: u8,
-        stdout: []const u8,
-        stderr: []const u8,
-    };
-
-    fn runIn(s: *Sandbox, sub: []const u8, args: []const []const u8, options: struct {
-        tty: bool = false,
-        no_color: ?[]const u8 = null,
-        git_env: ?*const std.process.Environ.Map = null,
-    }) !Output {
-        const arena = s.arena_state.allocator();
-        var out: Io.Writer.Allocating = .init(arena);
-        var err: Io.Writer.Allocating = .init(arena);
-        var ctx: Ctx = .{
-            .arena = arena,
-            .io = testing.io,
-            .stdout = &out.writer,
-            .stderr = &err.writer,
-            .stdout_is_tty = options.tty,
-            .no_color = options.no_color,
-            .cwd = try std.Io.Dir.path.join(arena, &.{ s.root, sub }),
-            .now = 20774 * 86400,
-            .git_env = options.git_env,
-            .root_ceiling = s.root,
-        };
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(arena);
-        try argv.append(arena, "specrail");
-        try argv.appendSlice(arena, args);
-        const code = run(&ctx, argv.items);
-        return .{ .code = code, .stdout = out.written(), .stderr = err.written() };
-    }
-
-    fn runAtRoot(s: *Sandbox, args: []const []const u8) !Output {
-        return s.runIn("", args, .{});
-    }
-
-    /// A small project that passes check.
-    fn passing(s: *Sandbox) !void {
-        try s.write("specrail.toml", "spec_root = \"specs\"\n");
-        try s.write("specs/a.spec.md", "# § 1 One\n\nIt MUST work.\n");
-        try s.write("src/a_test.zig", "// specrail: specs/a.spec.md § 1 One\n");
-    }
-};
-
-fn expectContains(haystack: []const u8, needle: []const u8) !void {
-    if (std.mem.find(u8, haystack, needle) == null) {
-        std.debug.print("expected '{s}' in:\n{s}\n", .{ needle, haystack });
-        return error.TestUnexpectedResult;
-    }
-}
+const sandbox = @import("sandbox.zig");
 
 // specrail: specs/cli.spec.md § 1.1 Help
 test "help lists every command and each command has usage" {
-    var s = try Sandbox.init();
+    var s = try sandbox.Sandbox.init();
     defer s.deinit();
     const top = try s.runAtRoot(&.{"--help"});
     try testing.expectEqual(@as(u8, 0), top.code);
-    for (commands) |c| try expectContains(top.stdout, c.name);
+    for (commands) |c| try sandbox.expectContains(top.stdout, c.name);
     for (commands) |c| {
         const one = try s.runAtRoot(&.{ c.name, "--help" });
         try testing.expectEqual(@as(u8, 0), one.code);
-        try expectContains(one.stdout, "Usage: specrail ");
+        try sandbox.expectContains(one.stdout, "Usage: specrail ");
     }
 }
 
 // specrail: specs/cli.spec.md § 1.2 Usage errors
 test "usage errors go to stderr with a hint and exit with status 2" {
-    var s = try Sandbox.init();
+    var s = try sandbox.Sandbox.init();
     defer s.deinit();
     const cases = [_]struct { args: []const []const u8, hint: []const u8 }{
         .{ .args = &.{}, .hint = "specrail --help" },
@@ -341,7 +246,7 @@ test "usage errors go to stderr with a hint and exit with status 2" {
         const o = try s.runAtRoot(case.args);
         try testing.expectEqual(@as(u8, 2), o.code);
         try testing.expectEqualStrings("", o.stdout);
-        try expectContains(o.stderr, case.hint);
+        try sandbox.expectContains(o.stderr, case.hint);
     }
 }
 
@@ -349,16 +254,16 @@ test "usage errors go to stderr with a hint and exit with status 2" {
 // specrail: specs/cli.spec.md § 2.4 Forced color
 // specrail: specs/cli.spec.md § 2.5 No color
 test "--color=always and --color=never override the defaults" {
-    var s = try Sandbox.init();
+    var s = try sandbox.Sandbox.init();
     defer s.deinit();
     try s.passing();
     try s.write("specs/b.spec.md", "# § 1 Uncovered\n\nIt MUST be reported.\n");
     const forced = try s.runIn("", &.{ "--color=always", "check" }, .{ .no_color = "1" });
-    try expectContains(forced.stdout, "\x1b[31merror");
+    try sandbox.expectContains(forced.stdout, "\x1b[31merror");
     const never = try s.runIn("", &.{ "check", "--color=never" }, .{ .tty = true });
     try testing.expect(std.mem.find(u8, never.stdout, "\x1b[") == null);
     const auto = try s.runIn("", &.{ "check", "--color=auto" }, .{ .tty = true });
-    try expectContains(auto.stdout, "\x1b[31merror");
+    try sandbox.expectContains(auto.stdout, "\x1b[31merror");
 }
 
 // specrail: specs/cli.spec.md § 2.3 Automatic color
@@ -367,305 +272,4 @@ test "by default color is on only for a terminal without NO_COLOR" {
     try testing.expect(useColor(.auto, true, ""));
     try testing.expect(!useColor(.auto, true, "1"));
     try testing.expect(!useColor(.auto, false, null));
-}
-
-// specrail: specs/cli/check.spec.md § 4.1 Pass and fail
-test "check exits 0 without errors and 1 with errors" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.passing();
-    try s.write("specs/w.spec.md", "# § 1 Draft\n```toml\nstatus = \"planned\"\n```\nTBD.\n");
-    const ok = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 0), ok.code);
-    try expectContains(ok.stdout, "warning:");
-    try expectContains(ok.stdout, "note:");
-    try s.write("specs/b.spec.md", "# § 1 Uncovered\n\nIt MUST be reported.\n");
-    const failing = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 1), failing.code);
-    try expectContains(failing.stdout, "specs/b.spec.md:1:1: error: § 1 Uncovered is not covered");
-}
-
-// specrail: specs/config.spec.md § 1.2 No project root
-test "without specrail.toml, commands exit 2 and suggest init" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    const o = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 2), o.code);
-    try expectContains(o.stderr, "specrail init");
-}
-
-// specrail: specs/config.spec.md § 1.1 Finding the project root
-test "commands find the project root from a subdirectory" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.passing();
-    const o = try s.runIn("src", &.{ "check", "../specs/a.spec.md" }, .{});
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try expectContains(o.stdout, "1/1 done leaves covered");
-}
-
-// specrail: specs/config.spec.md § 3.1 Listed files
-test "only files git lists are scanned" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.write("specrail.toml", "spec_root = \"specs\"\n");
-    try s.write("specs/a.spec.md", "# § 1 One\n\nIt MUST work.\n# § 2 Two\n\nIt MUST work.\n");
-    try s.write(".gitignore", "ignored/\n");
-    try s.write("tracked.zig", "// specrail: specs/a.spec.md § 1 One\n");
-    try s.git(&.{ "git", "add", "tracked.zig" });
-    try s.write("ignored/t.zig", "// specrail: specs/a.spec.md § 2 Two\n");
-    const o = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 1), o.code);
-    try expectContains(o.stdout, "§ 2 Two is not covered");
-    try expectContains(o.stdout, "1/2 done leaves covered");
-}
-
-// specrail: specs/config.spec.md § 3.2 Without git
-test "outside a git work tree, commands exit 2 with git's reason" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.passing();
-    var env = std.process.Environ.Map.init(testing.allocator);
-    defer env.deinit();
-    try env.put("GIT_DIR", "/nonexistent/specrail-test");
-    const o = try s.runIn("", &.{"check"}, .{ .git_env = &env });
-    try testing.expectEqual(@as(u8, 2), o.code);
-    try expectContains(o.stderr, "not a git repository");
-}
-
-// specrail: specs/format/references.spec.md § 2.1 Scanned files
-// specrail: specs/format/references.spec.md § 2.2 Binary files
-test "spec files, excluded files and binary files are not scanned" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.write("specrail.toml", "spec_root = \"specs\"\nexclude = [\"docs/**\"]\n");
-    try s.write(
-        "specs/a.spec.md",
-        "# § 1 One\n\nIt MUST work.\n\n```\n// specrail: specs/nope.spec.md § 1 Example\n```\n",
-    );
-    try s.write("docs/guide.md", "// specrail: specs/nope.spec.md § 1 Example\n");
-    try s.write("blob.bin", "\x00// specrail: specs/nope.spec.md § 1 Example\n");
-    try s.write("t.zig", "// specrail: specs/a.spec.md § 1 One\n");
-    const o = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 0), o.code);
-}
-
-// specrail: specs/cli/init.spec.md § 1.1 Create config
-// specrail: specs/cli/init.spec.md § 1.2 Root file
-test "init sets up a project that check accepts" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    const o = try s.runAtRoot(&.{"init"});
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings("spec_root = \"specs\"\n", try s.read("specrail.toml"));
-    try expectContains(try s.read("specs/root.spec.md"), "root of the spec tree");
-    try expectContains(o.stdout, "created specs/root.spec.md");
-    const checked = try s.runAtRoot(&.{"check"});
-    try testing.expectEqual(@as(u8, 0), checked.code);
-}
-
-// specrail: specs/cli/init.spec.md § 1.2 Root file
-test "init keeps a root file that already exists" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.write("specs/root.spec.md", "Our own context.\n");
-    const o = try s.runAtRoot(&.{"init"});
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings("Our own context.\n", try s.read("specs/root.spec.md"));
-}
-
-// specrail: specs/cli/init.spec.md § 1.3 Spec root option
-test "init puts the spec root where --spec-root says" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    const o = try s.runAtRoot(&.{ "init", "--spec-root", "docs/specs/" });
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings("spec_root = \"docs/specs\"\n", try s.read("specrail.toml"));
-    try testing.expect(s.exists("docs/specs/root.spec.md"));
-    try testing.expectEqual(@as(u8, 0), (try s.runAtRoot(&.{"check"})).code);
-    const outside = try s.runAtRoot(&.{ "init", "--spec-root=../elsewhere" });
-    try testing.expectEqual(@as(u8, 2), outside.code);
-}
-
-// specrail: specs/cli/init.spec.md § 1.4 Already initialized
-test "init changes nothing in a project that is already set up" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try s.write("specrail.toml", "spec_root = \"other\"\n");
-    const o = try s.runAtRoot(&.{"init"});
-    try testing.expectEqual(@as(u8, 2), o.code);
-    try expectContains(o.stderr, "already has a specrail.toml");
-    try testing.expectEqualStrings("spec_root = \"other\"\n", try s.read("specrail.toml"));
-    try testing.expect(!s.exists("specs"));
-}
-
-// specrail: specs/cli/skill.spec.md § 1.1 Output
-test "skill prints the embedded skill, with or without a project" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    const o = try s.runAtRoot(&.{"skill"});
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings(skill.text, o.stdout);
-}
-
-/// A project with a root file, a parent file, and nested sections, for `context`.
-fn contextProject(s: *Sandbox) !void {
-    try s.write("specrail.toml", "spec_root = \"specs\"\n");
-    try s.write("specs/root.spec.md", "Root context.\n");
-    try s.write("specs/auth.spec.md",
-        \\Auth context.
-        \\
-        \\---
-        \\
-        \\# § 1 Auth wide
-        \\
-        \\Every endpoint MUST be rate limited.
-        \\
-    );
-    try s.write("specs/auth/login.spec.md",
-        \\Login context.
-        \\
-        \\---
-        \\
-        \\# § 1 Login
-        \\```toml
-        \\dependencies = ["specs/auth.spec.md § 1 Auth wide"]
-        \\```
-        \\
-        \\Login parent prose.
-        \\
-        \\## § 1.1 Providers
-        \\
-        \\Providers prose.
-        \\
-        \\### § 1.1.1 Google
-        \\
-        \\It MUST accept Google.
-        \\
-        \\## § 1.2 Password
-        \\
-        \\It MUST accept a password.
-        \\
-    );
-    try s.write("src/a_test.zig",
-        \\// specrail: specs/auth/login.spec.md § 1.2 Password
-        \\test "password" {}
-        \\// specrail: specs/auth/login.spec.md § 1.1.1 Google
-        \\test "google" {}
-        \\
-    );
-}
-
-// specrail: specs/cli/context.spec.md § 2.1 Ancestor files
-// specrail: specs/cli/context.spec.md § 2.2 File context
-// specrail: specs/cli/context.spec.md § 2.3 Ancestors
-// specrail: specs/cli/context.spec.md § 2.4 The section and its subtree
-// specrail: specs/cli/context.spec.md § 2.5 Source markers
-// specrail: specs/cli/context.spec.md § 2.6 Dependencies
-// specrail: specs/cli/context.spec.md § 2.7 Verifying tests
-test "context prints from the most general context down to the section" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try contextProject(&s);
-    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md", "§", "1.1" });
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings(
-        \\<!-- specs/root.spec.md:1 -->
-        \\Root context.
-        \\
-        \\<!-- specs/auth.spec.md:1 -->
-        \\Auth context.
-        \\
-        \\<!-- specs/auth/login.spec.md:1 -->
-        \\Login context.
-        \\
-        \\<!-- specs/auth/login.spec.md:5 -->
-        \\# § 1 Login
-        \\```toml
-        \\dependencies = ["specs/auth.spec.md § 1 Auth wide"]
-        \\```
-        \\
-        \\Login parent prose.
-        \\
-        \\<!-- specs/auth/login.spec.md:12 -->
-        \\## § 1.1 Providers
-        \\
-        \\Providers prose.
-        \\
-        \\### § 1.1.1 Google
-        \\
-        \\It MUST accept Google.
-        \\
-        \\Dependencies:
-        \\- specs/auth.spec.md § 1 Auth wide (done)
-        \\
-        \\Verified by:
-        \\- src/a_test.zig:3
-        \\
-    , o.stdout);
-}
-
-// specrail: specs/cli/context.spec.md § 1.1 Section address
-// specrail: specs/format/spec-files.spec.md § 6.1 Alternate section sign
-test "context takes a section in reference form, with or without its title" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try contextProject(&s);
-    const whole = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 1.2 Password" });
-    try testing.expectEqual(@as(u8, 0), whole.code);
-    try expectContains(whole.stdout, "It MUST accept a password.");
-    const split = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md", "%", "1.2" });
-    try testing.expectEqualStrings(whole.stdout, split.stdout);
-}
-
-// specrail: specs/cli/context.spec.md § 1.2 Title check
-test "context refuses an address whose title has changed" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try contextProject(&s);
-    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 1.2 Passphrase" });
-    try testing.expectEqual(@as(u8, 1), o.code);
-    try testing.expectEqualStrings("", o.stdout);
-    try expectContains(o.stderr, "stale address");
-    try expectContains(o.stderr, "now § 1.2 Password");
-}
-
-// specrail: specs/cli/context.spec.md § 1.3 Unknown section
-test "context names an address that matches nothing" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try contextProject(&s);
-    const no_file = try s.runAtRoot(&.{ "context", "specs/nope.spec.md § 1" });
-    try testing.expectEqual(@as(u8, 1), no_file.code);
-    try testing.expectEqualStrings("", no_file.stdout);
-    try expectContains(no_file.stderr, "there is no spec file specs/nope.spec.md");
-    const no_section = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md § 9" });
-    try testing.expectEqual(@as(u8, 1), no_section.code);
-    try expectContains(no_section.stderr, "specs/auth/login.spec.md has no § 9");
-}
-
-// specrail: specs/cli/context.spec.md § 1.4 Whole file
-test "context on a spec file prints its context and an outline" {
-    var s = try Sandbox.init();
-    defer s.deinit();
-    try contextProject(&s);
-    const o = try s.runAtRoot(&.{ "context", "specs/auth/login.spec.md" });
-    try testing.expectEqual(@as(u8, 0), o.code);
-    try testing.expectEqualStrings(
-        \\<!-- specs/root.spec.md:1 -->
-        \\Root context.
-        \\
-        \\<!-- specs/auth.spec.md:1 -->
-        \\Auth context.
-        \\
-        \\<!-- specs/auth/login.spec.md:1 -->
-        \\Login context.
-        \\
-        \\<!-- specs/auth/login.spec.md:5 -->
-        \\# § 1 Login
-        \\## § 1.1 Providers
-        \\### § 1.1.1 Google
-        \\## § 1.2 Password
-        \\
-    , o.stdout);
 }

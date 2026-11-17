@@ -344,9 +344,9 @@ const Parser = struct {
         if (std.mem.eql(u8, tok, "false")) return .{ .boolean = false };
         if (date.looksLikeDate(tok)) {
             if (tok.len == 10) {
-                const d = date.parseDate(
-                    tok,
-                ) orelse return p.failAt(at, "invalid date '{s}'", .{tok});
+                const d = date.parseDate(tok) orelse {
+                    return p.failAt(at, "invalid date '{s}'", .{tok});
+                };
                 return .{ .date = d };
             }
             return switch (date.parseOffsetDateTime(tok)) {
