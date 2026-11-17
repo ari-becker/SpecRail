@@ -33,6 +33,17 @@ pub fn build(b: *std.Build) void {
     // compile error there fails the tests as well.
     test_step.dependOn(&exe.step);
 
+    // The repository checks itself with the specrail just built: every finished
+    // requirement in specs/ has a test that references it. This runs on every
+    // build, since the specs and tests it reads are not inputs the build system
+    // tracks.
+    const self_check = b.addRunArtifact(exe);
+    self_check.addArgs(&.{ "check", "--warnings-as-errors" });
+    self_check.setCwd(b.path("."));
+    self_check.stdio = .inherit;
+    b.step("check", "Check that every finished requirement has a test").dependOn(&self_check.step);
+    test_step.dependOn(&self_check.step);
+
     // The custom lint rules' own tests: a rule that flags nothing looks the same as
     // one that works, until it is tested.
     const rule_tests = b.addTest(.{ .root_module = b.createModule(.{
