@@ -22,6 +22,32 @@ pub const Input = struct {
 pub const Analysis = struct {
     diagnostics: diag.List,
     specs: []spec.SpecFile,
+    /// Index into `specs` of each spec file, by path.
+    by_path: std.StringHashMapUnmanaged(usize),
+    /// Every reference that names a leaf exactly.
+    references: []const Reference,
+
+    /// The spec file at `path`, if the project has one.
+    pub fn file(an: Analysis, path: []const u8) ?*const spec.SpecFile {
+        const i = an.by_path.get(path) orelse return null;
+        return &an.specs[i];
+    }
+
+    /// The section numbered `number` in the spec file at `path`, if there is one.
+    pub fn section(an: Analysis, path: []const u8, number: []const u8) ?*const spec.Section {
+        const sf = an.file(path) orelse return null;
+        for (sf.sections) |*s| {
+            if (std.mem.eql(u8, s.number, number)) return s;
+        }
+        return null;
+    }
+};
+
+/// A reference that names a leaf exactly, and where it is written.
+pub const Reference = struct {
+    form: refs.Form,
+    path: []const u8,
+    line: u32,
 };
 
 const Kind = enum {
@@ -45,6 +71,7 @@ const Analyzer = struct {
     out: diag.List = .empty,
     specs: []spec.SpecFile,
     by_path: std.StringHashMapUnmanaged(usize) = .empty,
+    found: std.ArrayList(Reference) = .empty,
 
     fn report(a: *Analyzer, d: diag.Diagnostic) Allocator.Error!void {
         try a.out.append(a.arena, d);
@@ -137,7 +164,12 @@ pub fn analyze(arena: Allocator, input: Input, now: i64) Allocator.Error!Analysi
     try checkDependencies(&a);
     try reportCoverage(&a);
     try noteUnfinishedWork(&a, now);
-    return .{ .diagnostics = a.out, .specs = a.specs };
+    return .{
+        .diagnostics = a.out,
+        .specs = a.specs,
+        .by_path = a.by_path,
+        .references = try a.found.toOwnedSlice(arena),
+    };
 }
 
 /// Resolves the references in one source file, and counts each toward the
@@ -175,6 +207,7 @@ fn scanReferences(a: *Analyzer, f: project.SourceFile) Allocator.Error!void {
                     continue :lines;
                 }
                 target.references += 1;
+                try a.found.append(a.arena, .{ .form = form, .path = f.path, .line = found.line });
             },
         }
     }

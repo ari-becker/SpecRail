@@ -15,9 +15,10 @@ names.
 
 ## Working on a section
 
-1. Read what the section depends on: the spec file's context (the text before
-   its `---` line), the prose of each of the section's ancestors, and the
-   context of the parent files above the spec file (see "The spec format").
+1. Run `specrail context <path> § <number>` and read what it prints: the
+   context of every spec file above the section, the section's ancestors, the
+   section with its subsections, its dependencies, and the tests that already
+   verify it. Given only a spec file, it prints an outline instead.
 2. Implement the section.
 3. Write tests. Above each test, add one comment line for each leaf it
    verifies, of the form `// specrail: <path> § <number> <title>`, with the

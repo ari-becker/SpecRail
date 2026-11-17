@@ -100,6 +100,47 @@ pub fn isBinary(content: []const u8) bool {
     return std.mem.findScalar(u8, content[0..@min(content.len, 8000)], 0) != null;
 }
 
+/// The parent files above a spec file, outermost first: `root.spec.md` in the
+/// spec root, then, for each directory between the spec root and the file, the
+/// spec file named after that directory beside it. Only paths in `specs` count;
+/// the file itself is left out, and each parent file is listed once.
+pub fn ancestorFiles(
+    arena: Allocator,
+    spec_root: []const u8,
+    path: []const u8,
+    specs: *const std.StringHashMapUnmanaged(usize),
+) Allocator.Error![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(arena);
+    if (!isUnder(path, spec_root)) return out.toOwnedSlice(arena);
+    const prefix = if (spec_root.len == 0) "" else try arena.print("{s}/", .{spec_root});
+    const ancestry: Ancestry = .{ .arena = arena, .out = &out, .specs = specs, .path = path };
+    try ancestry.add(try arena.print("{s}root.spec.md", .{prefix}));
+    const rel = path[prefix.len..];
+    var start: usize = 0;
+    while (std.mem.findScalarPos(u8, rel, start, '/')) |slash| {
+        try ancestry.add(try arena.print("{s}{s}.spec.md", .{ prefix, rel[0..slash] }));
+        start = slash + 1;
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// Collects the parent files of the spec file at `path`.
+const Ancestry = struct {
+    arena: Allocator,
+    out: *std.ArrayList([]const u8),
+    specs: *const std.StringHashMapUnmanaged(usize),
+    path: []const u8,
+
+    fn add(a: Ancestry, candidate: []const u8) Allocator.Error!void {
+        if (std.mem.eql(u8, candidate, a.path) or !a.specs.contains(candidate)) return;
+        for (a.out.items) |listed| {
+            if (std.mem.eql(u8, listed, candidate)) return;
+        }
+        try a.out.append(a.arena, candidate);
+    }
+};
+
 /// Listed files, split by what `check` does with them.
 pub const Partition = struct {
     spec_paths: []const []const u8,
@@ -177,4 +218,37 @@ test "a NUL byte in the first 8000 bytes makes a file binary" {
     try testing.expect(!isBinary("plain text"));
     const late = @as([8000]u8, @splat('a')) ++ [_]u8{0};
     try testing.expect(!isBinary(&late));
+}
+
+fn specSet(arena: Allocator, paths: []const []const u8) !std.StringHashMapUnmanaged(usize) {
+    var set: std.StringHashMapUnmanaged(usize) = .empty;
+    errdefer set.deinit(arena);
+    for (paths, 0..) |path, i| try set.put(arena, path, i);
+    return set;
+}
+
+// specrail: specs/format/spec-files.spec.md § 1.2 Parent files
+// specrail: specs/format/spec-files.spec.md § 1.3 Ancestor files
+test "the ancestor files are the parent files of the directories above a spec" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const set = try specSet(arena, &.{
+        "specs/root.spec.md",
+        "specs/auth.spec.md",
+        "specs/auth/login.spec.md",
+        "specs/auth/oauth/google.spec.md",
+        "specs/root/odd.spec.md",
+    });
+    const deep = try ancestorFiles(arena, "specs", "specs/auth/oauth/google.spec.md", &set);
+    try testing.expectEqual(@as(usize, 2), deep.len);
+    try testing.expectEqualStrings("specs/root.spec.md", deep[0]);
+    try testing.expectEqualStrings("specs/auth.spec.md", deep[1]);
+    const root = try ancestorFiles(arena, "specs", "specs/root.spec.md", &set);
+    try testing.expectEqual(@as(usize, 0), root.len);
+    const odd = try ancestorFiles(arena, "specs", "specs/root/odd.spec.md", &set);
+    try testing.expectEqual(@as(usize, 1), odd.len);
+    const top = try specSet(arena, &.{ "root.spec.md", "auth.spec.md", "auth/login.spec.md" });
+    const at_top = try ancestorFiles(arena, "", "auth/login.spec.md", &top);
+    try testing.expectEqualStrings("auth.spec.md", at_top[1]);
 }

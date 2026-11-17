@@ -46,6 +46,7 @@ test {
     _ = @import("check.zig");
     _ = @import("cli.zig");
     _ = @import("config.zig");
+    _ = @import("context.zig");
     _ = @import("date.zig");
     _ = @import("diag.zig");
     _ = @import("files.zig");

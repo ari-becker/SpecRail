@@ -17,18 +17,12 @@ specrail MUST treat a file found by the file scan as a spec file exactly when
 it is under the spec root and its name ends in `.spec.md`.
 
 ## § 1.2 Parent files
-```toml
-status = "planned"
-```
 
 specrail MUST treat a spec file named `<name>.spec.md` as the parent file of
 the directory `<name>` beside it, and `root.spec.md` directly in the spec root
 as the parent file of the spec root.
 
 ## § 1.3 Ancestor files
-```toml
-status = "planned"
-```
 
 The ancestor files of a spec file MUST be the parent files of the directories
 that contain it, from the spec root inward, excluding the spec file itself,
@@ -191,9 +185,6 @@ layout types it without Option or AltGr, and it means nothing special to
 shells, regular expressions, Markdown or TOML.
 
 ## § 6.1 Alternate section sign
-```toml
-status = "in-progress"
-```
 
 Wherever specrail reads a section sign (in section headings, reference lines,
 dependency entries and command arguments), it MUST accept `%` in its place and

@@ -66,12 +66,21 @@ pub const Section = struct {
     effective: Status = .done,
     /// Number of references naming this section; filled in by `check`.
     references: u32 = 0,
+    /// 0-based index of the line after the section's own text: its heading,
+    /// metadata block and own prose.
+    own_end: u32 = 0,
+    /// 0-based index of the line after the section and all its descendants.
+    subtree_end: u32 = 0,
 };
 
 /// A parsed spec file.
 pub const SpecFile = struct {
     path: []const u8,
     sections: []Section,
+    /// The file's lines, without line endings.
+    lines: []const []const u8,
+    /// The lines of the file's context.
+    context: Range,
 };
 
 /// Parses a spec file and reports into `out` every problem that can be found
@@ -321,7 +330,8 @@ fn scanWords(
 
 // ---------------------------------------------------------------- parser
 
-const Range = struct { start: usize, end: usize };
+/// A run of lines, as 0-based indices; `end` is not included.
+pub const Range = struct { start: usize, end: usize };
 
 const Parser = struct {
     arena: Allocator,
@@ -402,7 +412,30 @@ const Parser = struct {
         try p.readSections(sec_start);
         try p.buildTree();
         try p.checkProse();
-        return .{ .path = p.path, .sections = p.sections.items };
+        p.markExtents();
+        const texts = try p.arena.alloc([]const u8, n);
+        for (p.lines, 0..) |l, i| texts[i] = l.text;
+        return .{
+            .path = p.path,
+            .sections = p.sections.items,
+            .lines = texts,
+            .context = .{ .start = 0, .end = ctx_end },
+        };
+    }
+
+    /// Records where each section's own text ends, and where its subtree does.
+    fn markExtents(p: *Parser) void {
+        const secs = p.sections.items;
+        for (secs, 0..) |*s, idx| {
+            s.own_end = @intCast(p.prose.items[idx].end);
+            s.subtree_end = @intCast(p.lines.len);
+            for (secs[idx + 1 ..]) |later| {
+                if (later.level <= s.level) {
+                    s.subtree_end = later.line - 1;
+                    break;
+                }
+            }
+        }
     }
 
     /// Reports a separator with nothing before it, and setext underlines anywhere.

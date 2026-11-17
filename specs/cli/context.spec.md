@@ -11,9 +11,6 @@ specrail context specs/auth/login.spec.md
 ---
 
 # § 1 Arguments
-```toml
-status = "planned"
-```
 
 ## § 1.1 Section address
 
@@ -40,9 +37,6 @@ file, the file's own context, and the heading of every section in the file,
 without section prose or metadata blocks.
 
 # § 2 Section output
-```toml
-status = "planned"
-```
 
 For a section, the output follows the hierarchy down from the spec root, so
 an agent reads the reasons before the requirement.
