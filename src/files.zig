@@ -14,15 +14,30 @@ pub const ListResult = union(enum) {
 
 /// Lists tracked files and untracked files that are not ignored, as
 /// `git ls-files --cached --others --exclude-standard` does.
-pub fn list(arena: Allocator, io: Io, root: []const u8, env: ?*const std.process.Environ.Map) Allocator.Error!ListResult {
+pub fn list(
+    arena: Allocator,
+    io: Io,
+    root: []const u8,
+    env: ?*const std.process.Environ.Map,
+) Allocator.Error!ListResult {
     const result = std.process.run(arena, io, .{
         .argv = &.{ "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z" },
         .cwd = .{ .path = root },
         .environ_map = env,
-    }) catch |e| return .{ .err = try arena.print("cannot run git ({s}); specrail needs git to list the project's files", .{@errorName(e)}) };
+    }) catch |e| return .{
+        .err = try arena.print(
+            "cannot run git ({s}); specrail needs git to list the project's files",
+            .{@errorName(e)},
+        ),
+    };
     if (!result.term.success()) {
         const msg = std.mem.trim(u8, result.stderr, " \t\r\n");
-        return .{ .err = try arena.print("git ls-files failed in {s}: {s}", .{ root, if (msg.len > 0) msg else "no message" }) };
+        return .{
+            .err = try arena.print(
+                "git ls-files failed in {s}: {s}",
+                .{ root, if (msg.len > 0) msg else "no message" },
+            ),
+        };
     }
     var seen: std.StringHashMapUnmanaged(void) = .empty;
     defer seen.deinit(arena);
@@ -67,7 +82,10 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
         // bound: the pattern loses its first byte.
         '?' => return path.len > 0 and path[0] != '/' and globMatch(pattern[1..], path[1..]),
         // bound: the pattern loses its first byte.
-        else => return path.len > 0 and path[0] == pattern[0] and globMatch(pattern[1..], path[1..]),
+        else => return path.len > 0 and path[0] == pattern[0] and globMatch(
+            pattern[1..],
+            path[1..],
+        ),
     }
 }
 
@@ -89,7 +107,11 @@ pub const Partition = struct {
 };
 
 /// Splits listed files into spec files and files to scan for references.
-pub fn partition(arena: Allocator, paths: []const []const u8, cfg: Config) Allocator.Error!Partition {
+pub fn partition(
+    arena: Allocator,
+    paths: []const []const u8,
+    cfg: Config,
+) Allocator.Error!Partition {
     var specs: std.ArrayList([]const u8) = .empty;
     errdefer specs.deinit(arena);
     var sources: std.ArrayList([]const u8) = .empty;
@@ -101,7 +123,10 @@ pub fn partition(arena: Allocator, paths: []const []const u8, cfg: Config) Alloc
             try sources.append(arena, p);
         }
     }
-    return .{ .spec_paths = try specs.toOwnedSlice(arena), .source_paths = try sources.toOwnedSlice(arena) };
+    return .{
+        .spec_paths = try specs.toOwnedSlice(arena),
+        .source_paths = try sources.toOwnedSlice(arena),
+    };
 }
 
 // ---------------------------------------------------------------- tests

@@ -28,7 +28,8 @@ pub fn buildRule(options: zlinter.rules.RuleOptions) zlinter.rules.LintRule {
 }
 
 const consent = "// order:";
-const message = "two parameters of one integer type transpose silently: take a struct with named fields, or say why the order is safe (`// order: ...`)";
+const message = "two parameters of one integer type transpose silently: take a struct with " ++
+    "named fields, or say why the order is safe (`// order: ...`)";
 
 fn run(
     rule: zlinter.rules.LintRule,
@@ -56,38 +57,24 @@ fn run(
         const proto = tree.fullFnProto(&buffer, node) orelse continue;
         if (config.exclude_tests and doc.isEnclosedInTestBlock(session, node)) continue;
         const proto_end = tree.tokenStart(tree.lastToken(proto.ast.proto_node));
-        const proto_span: Span = .{ .start = tree.tokenStart(proto.ast.fn_token), .end = proto_end };
+        const proto_span: Span = .{
+            .start = tree.tokenStart(proto.ast.fn_token),
+            .end = proto_end,
+        };
         if (markedNear(tree.source, proto_span, consent)) continue;
         if (isCAbi(tree, proto)) continue;
-
-        // Compare every integer-typed parameter against the ones before it; the first
-        // pair that matches names the finding, and one finding per function is enough.
-        var seen: [32][]const u8 = undefined;
-        var n: usize = 0;
-        var params = proto.iterate(&tree);
-        param_loop: while (params.next()) |param| {
-            const type_expr = param.type_expr orelse continue :param_loop;
-            const type_text = tree.getNodeSource(type_expr);
-            if (!isIntType(type_text)) continue :param_loop;
-            var twin = false;
-            for (seen[0..n]) |earlier| {
-                if (std.mem.eql(u8, earlier, type_text)) twin = true;
-            }
-            if (twin) {
-                try problems.append(session_arena, .{
-                    .rule_id = rule.rule_id,
-                    .severity = config.severity,
-                    .start = if (param.name_token) |t| .startOfToken(tree, t) else .startOfNode(tree, type_expr),
-                    .end = .endOfNode(tree, type_expr),
-                    .message = try session_arena.dupe(u8, message),
-                });
-                break;
-            }
-            if (n < seen.len) {
-                seen[n] = type_text;
-                n += 1;
-            }
-        }
+        const param = twinParam(tree, proto) orelse continue;
+        const type_expr = param.type_expr.?;
+        try problems.append(session_arena, .{
+            .rule_id = rule.rule_id,
+            .severity = config.severity,
+            .start = if (param.name_token) |t|
+                .startOfToken(tree, t)
+            else
+                .startOfNode(tree, type_expr),
+            .end = .endOfNode(tree, type_expr),
+            .message = try session_arena.dupe(u8, message),
+        });
     }
 
     return if (problems.items.len > 0)
@@ -96,13 +83,45 @@ fn run(
         null;
 }
 
+/// The second of the first two parameters that share an integer type, if any.
+fn twinParam(tree: Ast, proto: Ast.full.FnProto) ?Ast.full.FnProto.Param {
+    // Compare every integer-typed parameter against the ones before it; the first
+    // pair that matches names the finding, and one finding per function is enough.
+    var seen: [32][]const u8 = undefined;
+    var n: usize = 0;
+    var params = proto.iterate(&tree);
+    while (params.next()) |param| {
+        const type_expr = param.type_expr orelse continue;
+        const type_text = tree.getNodeSource(type_expr);
+        if (!isIntType(type_text)) continue;
+        for (seen[0..n]) |earlier| {
+            if (std.mem.eql(u8, earlier, type_text)) return param;
+        }
+        if (n < seen.len) {
+            seen[n] = type_text;
+            n += 1;
+        }
+    }
+    return null;
+}
+
 /// Whether a type, as written, is an integer type: `uN`, `iN`, `usize`, `isize`, or one
 /// of the C integer types.
 fn isIntType(text: []const u8) bool {
     if (text.len < 2) return false;
     if (std.mem.eql(u8, text, "usize") or std.mem.eql(u8, text, "isize")) return true;
     if (std.mem.startsWith(u8, text, "c_")) {
-        for ([_][]const u8{ "c_char", "c_short", "c_ushort", "c_int", "c_uint", "c_long", "c_ulong", "c_longlong", "c_ulonglong" }) |c| {
+        for ([_][]const u8{
+            "c_char",
+            "c_short",
+            "c_ushort",
+            "c_int",
+            "c_uint",
+            "c_long",
+            "c_ulong",
+            "c_longlong",
+            "c_ulonglong",
+        }) |c| {
             if (std.mem.eql(u8, text, c)) return true;
         }
         return false;
@@ -149,7 +168,7 @@ fn markedNear(source: []const u8, span: Span, marker: []const u8) bool {
     return std.mem.startsWith(u8, above, "//") and std.mem.find(u8, above, marker) != null;
 }
 
-test "two parameters of one integer type are flagged at the second; distinct types, structs and consent are not" {
+test "twin integer parameters are flagged at the second; other types, structs, consent are not" {
     const rule = buildRule(.{});
     const source =
         \\fn copy(src: []const u8, offset: usize, len: usize) void {}
@@ -171,17 +190,60 @@ test "two parameters of one integer type are flagged at the second; distinct typ
     ;
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "b: c_int", .message = message },
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "c: u8", .message = message },
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "len: usize", .message = message },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "b: c_int",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "c: u8",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "len: usize",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = false }, &.{
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "y: u8", .message = message },
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "b: c_int", .message = message },
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "c: u8", .message = message },
-        .{ .rule_id = "no_twin_int_params", .severity = .warning, .slice = "len: usize", .message = message },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = false }, &.{
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "y: u8",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "b: c_int",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "c: u8",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_twin_int_params",
+            .severity = .warning,
+            .slice = "len: usize",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

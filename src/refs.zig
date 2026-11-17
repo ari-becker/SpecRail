@@ -87,10 +87,14 @@ pub fn parseAddress(text: []const u8, title_rule: TitleRule) AddressResult {
     const end = std.mem.findAny(u8, rest, blanks) orelse rest.len;
     const number = rest[0..end];
     if (!isValidNumber(number)) {
-        return .{ .err = "expected a section number made of positive integers joined by '.', such as 1.2" };
+        return .{
+            .err = "expected a section number made of positive integers joined by '.', such as 1.2",
+        };
     }
     const title = std.mem.trim(u8, rest[end..], blanks);
-    if (title.len == 0 and title_rule == .required) return .{ .err = "expected a section title after the number" };
+    if (title.len == 0 and title_rule == .required) return .{
+        .err = "expected a section title after the number",
+    };
     return .{ .ok = .{ .number = number, .title = title, .alt_sign = alt } };
 }
 
@@ -101,7 +105,14 @@ pub fn parseForm(text: []const u8, title_rule: TitleRule) FormResult {
     const end = std.mem.findAny(u8, t, blanks) orelse t.len;
     return switch (parseAddress(t[end..], title_rule)) {
         .err => |e| .{ .err = e },
-        .ok => |a| .{ .ok = .{ .path = t[0..end], .number = a.number, .title = a.title, .alt_sign = a.alt_sign } },
+        .ok => |a| .{
+            .ok = .{
+                .path = t[0..end],
+                .number = a.number,
+                .title = a.title,
+                .alt_sign = a.alt_sign,
+            },
+        },
     };
 }
 
@@ -134,7 +145,12 @@ pub fn scanLine(raw: []const u8) ?LineRef {
         }
     }
     if (rest.len == 0 or (rest[0] != ' ' and rest[0] != '\t')) {
-        return .{ .column = col, .result = .{ .err = "expected a space and a section in reference form after 'specrail:'" } };
+        return .{
+            .column = col,
+            .result = .{
+                .err = "expected a space and a section in reference form after 'specrail:'",
+            },
+        };
     }
     return .{ .column = col, .result = parseForm(rest, .required) };
 }
@@ -146,7 +162,10 @@ pub const Found = struct {
 };
 
 /// Scans a whole file for reference lines.
-pub fn scanText(arena: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const Found {
+pub fn scanText(
+    arena: std.mem.Allocator,
+    content: []const u8,
+) std.mem.Allocator.Error![]const Found {
     if (std.mem.find(u8, content, marker) == null) return &.{};
     var out: std.ArrayList(Found) = .empty;
     errdefer out.deinit(arena);
@@ -180,8 +199,18 @@ fn expectRef(line: []const u8, path: []const u8, number: []const u8, title: []co
 
 // specrail: specs/format/references.spec.md § 1.1 Reference line
 test "a reference line names a spec file and a section" {
-    try expectRef("// specrail: specs/auth/login.spec.md § 1.1.2 Accept password login", "specs/auth/login.spec.md", "1.1.2", "Accept password login");
-    try expectRef("specrail: specs/a.spec.md § 3 Title with  inner  spaces ", "specs/a.spec.md", "3", "Title with  inner  spaces");
+    try expectRef(
+        "// specrail: specs/auth/login.spec.md § 1.1.2 Accept password login",
+        "specs/auth/login.spec.md",
+        "1.1.2",
+        "Accept password login",
+    );
+    try expectRef(
+        "specrail: specs/a.spec.md § 3 Title with  inner  spaces ",
+        "specs/a.spec.md",
+        "3",
+        "Title with  inner  spaces",
+    );
     try testing.expectEqual(@as(u32, 4), scanLine("// specrail: specs/a.spec.md § 1 T").?.column);
 }
 
@@ -228,7 +257,10 @@ test "CRLF line endings do not leak into titles" {
     try expectRef("// specrail: specs/a.spec.md § 1 Title\r", "specs/a.spec.md", "1", "Title");
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const found = try scanText(arena_state.allocator(), "x\r\n// specrail: specs/a.spec.md § 2 Two\r\n");
+    const found = try scanText(
+        arena_state.allocator(),
+        "x\r\n// specrail: specs/a.spec.md § 2 Two\r\n",
+    );
     try testing.expectEqual(@as(usize, 1), found.len);
     try testing.expectEqual(@as(u32, 2), found[0].line);
     try testing.expectEqualStrings("Two", found[0].ref.result.ok.title);
@@ -244,7 +276,12 @@ test "percent stands in for the section sign in reference form" {
 
 // specrail: specs/format/spec-files.spec.md § 6.2 Only in the marker position
 test "percent elsewhere is text" {
-    try expectRef("// specrail: specs/a.spec.md § 2.1 Cap at 50% CPU", "specs/a.spec.md", "2.1", "Cap at 50% CPU");
+    try expectRef(
+        "// specrail: specs/a.spec.md § 2.1 Cap at 50% CPU",
+        "specs/a.spec.md",
+        "2.1",
+        "Cap at 50% CPU",
+    );
     try testing.expect(startsWithSign("% 1 Section"));
     try testing.expect(!startsWithSign("%1 of users"));
     try testing.expect(!startsWithSign("% of users"));

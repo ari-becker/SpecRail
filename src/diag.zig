@@ -86,7 +86,10 @@ pub fn write(w: *Writer, d: Diagnostic, color: bool) Writer.Error!void {
             d.path, d.line, d.column, d.severity.color(), d.severity.name(), d.message,
         });
     } else {
-        try w.print("{s}:{d}:{d}: {s}: {s}\n", .{ d.path, d.line, d.column, d.severity.name(), d.message });
+        try w.print(
+            "{s}:{d}:{d}: {s}: {s}\n",
+            .{ d.path, d.line, d.column, d.severity.name(), d.message },
+        );
     }
 }
 
@@ -94,7 +97,10 @@ pub fn write(w: *Writer, d: Diagnostic, color: bool) Writer.Error!void {
 pub fn writeJson(w: *Writer, d: Diagnostic) Writer.Error!void {
     try w.writeAll("{\"path\":");
     try std.json.Stringify.encodeJsonString(d.path, .{}, w);
-    try w.print(",\"line\":{d},\"column\":{d},\"severity\":\"{s}\",\"message\":", .{ d.line, d.column, d.severity.name() });
+    try w.print(
+        ",\"line\":{d},\"column\":{d},\"severity\":\"{s}\",\"message\":",
+        .{ d.line, d.column, d.severity.name() },
+    );
     try std.json.Stringify.encodeJsonString(d.message, .{}, w);
     try w.writeAll("}");
 }
@@ -107,7 +113,17 @@ const testing = std.testing;
 test "a diagnostic line has the shape path:line:column: severity: message" {
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try write(&out.writer, .{ .path = "specs/a.spec.md", .line = 3, .column = 1, .severity = .warning, .message = "m" }, false);
+    try write(
+        &out.writer,
+        .{
+            .path = "specs/a.spec.md",
+            .line = 3,
+            .column = 1,
+            .severity = .warning,
+            .message = "m",
+        },
+        false,
+    );
     try testing.expectEqualStrings("specs/a.spec.md:3:1: warning: m\n", out.written());
 }
 
@@ -115,10 +131,24 @@ test "a diagnostic line has the shape path:line:column: severity: message" {
 test "colored diagnostics put the location in bold and color the severity" {
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    const d: Diagnostic = .{ .path = "p", .line = 1, .column = 2, .severity = .err, .message = "m" };
+    const d: Diagnostic = .{
+        .path = "p",
+        .line = 1,
+        .column = 2,
+        .severity = .err,
+        .message = "m",
+    };
     try write(&out.writer, d, true);
-    try write(&out.writer, .{ .path = "p", .line = 1, .column = 2, .severity = .warning, .message = "m" }, true);
-    try write(&out.writer, .{ .path = "p", .line = 1, .column = 2, .severity = .note, .message = "m" }, true);
+    try write(
+        &out.writer,
+        .{ .path = "p", .line = 1, .column = 2, .severity = .warning, .message = "m" },
+        true,
+    );
+    try write(
+        &out.writer,
+        .{ .path = "p", .line = 1, .column = 2, .severity = .note, .message = "m" },
+        true,
+    );
     try testing.expectEqualStrings(
         "\x1b[1mp:1:2:\x1b[0m \x1b[31merror\x1b[0m: m\n" ++
             "\x1b[1mp:1:2:\x1b[0m \x1b[33mwarning\x1b[0m: m\n" ++
@@ -138,5 +168,8 @@ test "diagnostics sort by path, then line, then column" {
         .{ .path = "a", .line = 1, .column = 1, .severity = .err, .message = "1" },
     };
     sort(&items);
-    for (items, 0..) |d, i| try testing.expectEqual(@as(u8, '1') + @as(u8, @intCast(i)), d.message[0]);
+    for (items, 0..) |d, i| try testing.expectEqual(
+        @as(u8, '1') + @as(u8, @intCast(i)),
+        d.message[0],
+    );
 }

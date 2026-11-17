@@ -27,7 +27,8 @@ pub fn buildRule(options: zlinter.rules.RuleOptions) zlinter.rules.LintRule {
     return .{ .rule_id = "loop_bound", .run = &run };
 }
 
-const message = "`while (true)` declares no bound: loop on a condition, or on a count it may not exceed";
+const message = "`while (true)` declares no bound: loop on a condition, or on a count it may " ++
+    "not exceed";
 
 fn run(
     rule: zlinter.rules.LintRule,
@@ -82,13 +83,36 @@ test "an unbounded loop is flagged; a conditioned one, and a counted one, are no
     ;
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "loop_bound", .severity = .warning, .slice = "while (true)", .message = message },
+        .{
+            .rule_id = "loop_bound",
+            .severity = .warning,
+            .slice = "while (true)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = false }, &.{
-        .{ .rule_id = "loop_bound", .severity = .warning, .slice = "while (true)", .message = message },
-        .{ .rule_id = "loop_bound", .severity = .warning, .slice = "while (true)", .message = message },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = false }, &.{
+        .{
+            .rule_id = "loop_bound",
+            .severity = .warning,
+            .slice = "while (true)",
+            .message = message,
+        },
+        .{
+            .rule_id = "loop_bound",
+            .severity = .warning,
+            .slice = "while (true)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

@@ -37,7 +37,10 @@ fn readFile(arena: Allocator, io: Io, root: []const u8, path: []const u8) !?[]co
 pub fn open(ctx: *cli.Ctx) cli.Error!?Project {
     const arena = ctx.arena;
     const root = (try config.findProjectRoot(arena, ctx.io, ctx.cwd, ctx.root_ceiling)) orelse {
-        try ctx.stderr.print("specrail: no {s} in {s} or any parent directory; run 'specrail init' to create one\n", .{ config.file_name, ctx.cwd });
+        try ctx.stderr.print(
+            "specrail: no {s} in {s} or any parent directory; run 'specrail init' to create one\n",
+            .{ config.file_name, ctx.cwd },
+        );
         return null;
     };
     const toml_path = try std.Io.Dir.path.join(arena, &.{ root, config.file_name });
@@ -110,20 +113,35 @@ pub fn normalizeAbsolute(arena: Allocator, path: []const u8) Allocator.Error![]c
 
 /// Turns a command-line path, relative to the working directory, into a path
 /// relative to the project root; null when it is outside the project.
-pub fn projectPath(arena: Allocator, cwd: []const u8, root: []const u8, arg: []const u8) Allocator.Error!?[]const u8 {
-    const joined = if (std.Io.Dir.path.isAbsolute(arg)) arg else try std.Io.Dir.path.join(arena, &.{ cwd, arg });
+pub fn projectPath(
+    arena: Allocator,
+    cwd: []const u8,
+    root: []const u8,
+    arg: []const u8,
+) Allocator.Error!?[]const u8 {
+    const joined = if (std.Io.Dir.path.isAbsolute(arg))
+        arg
+    else
+        try std.Io.Dir.path.join(arena, &.{ cwd, arg });
     const abs = try normalizeAbsolute(arena, joined);
     if (std.mem.eql(u8, abs, root)) return "";
-    if (!std.mem.startsWith(u8, abs, root) or abs.len <= root.len or abs[root.len] != '/') return null;
-    return abs[root.len + 1 ..];
+    const inside = std.mem.startsWith(u8, abs, root) and
+        abs.len > root.len and abs[root.len] == '/';
+    return if (inside) abs[root.len + 1 ..] else null;
 }
 
 test "command-line paths become project paths" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    try std.testing.expectEqualStrings("specs/a.spec.md", (try projectPath(arena, "/p", "/p", "specs/a.spec.md")).?);
-    try std.testing.expectEqualStrings("specs/a.spec.md", (try projectPath(arena, "/p/src", "/p", "../specs/./a.spec.md")).?);
+    try std.testing.expectEqualStrings(
+        "specs/a.spec.md",
+        (try projectPath(arena, "/p", "/p", "specs/a.spec.md")).?,
+    );
+    try std.testing.expectEqualStrings(
+        "specs/a.spec.md",
+        (try projectPath(arena, "/p/src", "/p", "../specs/./a.spec.md")).?,
+    );
     try std.testing.expectEqualStrings("", (try projectPath(arena, "/p/specs", "/p", "..")).?);
     try std.testing.expect((try projectPath(arena, "/p", "/p", "../q")) == null);
     try std.testing.expect((try projectPath(arena, "/p", "/p", "/px/a")) == null);

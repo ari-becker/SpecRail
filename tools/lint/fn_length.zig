@@ -58,7 +58,10 @@ fn run(
             .severity = config.severity,
             .start = .startOfToken(tree, full.ast.fn_token),
             .end = .endOfNode(tree, proto),
-            .message = try session_arena.print("`{s}` is {d} lines; a function fits on a screen ({d}): split it", .{ name, lines, config.lines_max }),
+            .message = try session_arena.print(
+                "`{s}` is {d} lines; a function fits on a screen ({d}): split it",
+                .{ name, lines, config.lines_max },
+            ),
         });
     }
 
@@ -91,15 +94,46 @@ test "a function over the limit is flagged with its length; at the limit it is n
         \\}
     ;
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .lines_max = 3 }, &.{
-        .{ .rule_id = "fn_length", .severity = .warning, .slice = "fn inner() void", .message = "`inner` is 4 lines; a function fits on a screen (3): split it" },
-        .{ .rule_id = "fn_length", .severity = .warning, .slice = "fn long() void", .message = "`long` is 6 lines; a function fits on a screen (3): split it" },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .lines_max = 3 }, &.{
+        .{
+            .rule_id = "fn_length",
+            .severity = .warning,
+            .slice = "fn inner() void",
+            .message = "`inner` is 4 lines; a function fits on a screen (3): split it",
+        },
+        .{
+            .rule_id = "fn_length",
+            .severity = .warning,
+            .slice = "fn long() void",
+            .message = "`long` is 6 lines; a function fits on a screen (3): split it",
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .lines_max = 3, .exclude_tests = true }, &.{
-        .{ .rule_id = "fn_length", .severity = .warning, .slice = "fn long() void", .message = "`long` is 6 lines; a function fits on a screen (3): split it" },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .lines_max = 3, .exclude_tests = true }, &.{
+        .{
+            .rule_id = "fn_length",
+            .severity = .warning,
+            .slice = "fn long() void",
+            .message = "`long` is 6 lines; a function fits on a screen (3): split it",
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .lines_max = 6 }, &.{});
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .lines_max = 6 },
+        &.{},
+    );
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

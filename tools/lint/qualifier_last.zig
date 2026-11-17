@@ -107,7 +107,8 @@ fn check(c: Checker, name_token: Ast.TokenIndex) !void {
         .start = .startOfToken(tree, name_token),
         .end = .endOfToken(tree, name_token),
         .message = try session_arena.print(
-            "`{s}` puts its qualifier first: units and qualifiers go last (`{s}_{s}`), so related names sort together",
+            "`{s}` puts its qualifier first: units and qualifiers go last (`{s}_{s}`), so " ++
+                "related names sort together",
             .{ name, name[prefix.len..], prefix[0 .. prefix.len - 1] },
         ),
     });
@@ -120,7 +121,7 @@ fn qualifier(name: []const u8, prefixes: []const []const u8) ?[]const u8 {
     return null;
 }
 
-test "a qualifier-first const, field and parameter are flagged; last-placed and excluded names are not" {
+test "qualifier-first consts, fields and parameters are flagged; others and exclusions are not" {
     const rule = buildRule(.{});
     const source =
         \\const max_len = 10;
@@ -138,17 +139,67 @@ test "a qualifier-first const, field and parameter are flagged; last-placed and 
     const kept = Config{ .exclude_names = &.{"min_rtt"} };
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, kept, &.{
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "avg_ms", .message = "`avg_ms` puts its qualifier first: units and qualifiers go last (`ms_avg`), so related names sort together" },
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "total_bytes", .message = "`total_bytes` puts its qualifier first: units and qualifiers go last (`bytes_total`), so related names sort together" },
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "num_unacked", .message = "`num_unacked` puts its qualifier first: units and qualifiers go last (`unacked_num`), so related names sort together" },
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "max_len", .message = "`max_len` puts its qualifier first: units and qualifiers go last (`len_max`), so related names sort together" },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "avg_ms",
+            .message = "`avg_ms` puts its qualifier first: units and qualifiers go last " ++
+                "(`ms_avg`), so related names sort together",
+        },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "total_bytes",
+            .message = "`total_bytes` puts its qualifier first: units and qualifiers go last " ++
+                "(`bytes_total`), so related names sort together",
+        },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "num_unacked",
+            .message = "`num_unacked` puts its qualifier first: units and qualifiers go last " ++
+                "(`unacked_num`), so related names sort together",
+        },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "max_len",
+            .message = "`max_len` puts its qualifier first: units and qualifiers go last " ++
+                "(`len_max`), so related names sort together",
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_names = &.{"min_rtt"}, .exclude_tests = true }, &.{
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "total_bytes", .message = "`total_bytes` puts its qualifier first: units and qualifiers go last (`bytes_total`), so related names sort together" },
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "num_unacked", .message = "`num_unacked` puts its qualifier first: units and qualifiers go last (`unacked_num`), so related names sort together" },
-        .{ .rule_id = "qualifier_last", .severity = .warning, .slice = "max_len", .message = "`max_len` puts its qualifier first: units and qualifiers go last (`len_max`), so related names sort together" },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_names = &.{"min_rtt"}, .exclude_tests = true }, &.{
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "total_bytes",
+            .message = "`total_bytes` puts its qualifier first: units and qualifiers go last " ++
+                "(`bytes_total`), so related names sort together",
+        },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "num_unacked",
+            .message = "`num_unacked` puts its qualifier first: units and qualifiers go last " ++
+                "(`unacked_num`), so related names sort together",
+        },
+        .{
+            .rule_id = "qualifier_last",
+            .severity = .warning,
+            .slice = "max_len",
+            .message = "`max_len` puts its qualifier first: units and qualifiers go last " ++
+                "(`len_max`), so related names sort together",
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

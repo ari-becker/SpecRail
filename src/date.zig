@@ -111,7 +111,10 @@ pub fn isOverdue(due: Date, now: i64) bool {
 
 test "dates convert to days since the epoch" {
     try std.testing.expectEqual(@as(i64, 0), (Date{ .year = 1970, .month = 1, .day = 1 }).days());
-    try std.testing.expectEqual(@as(i64, 20774), (Date{ .year = 2026, .month = 11, .day = 17 }).days());
+    try std.testing.expectEqual(
+        @as(i64, 20774),
+        (Date{ .year = 2026, .month = 11, .day = 17 }).days(),
+    );
     try std.testing.expect(parseDate("2028-02-29") != null);
     try std.testing.expect(parseDate("2027-02-29") == null);
     try std.testing.expect(parseDate("2027-13-01") == null);

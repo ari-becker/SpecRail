@@ -28,10 +28,18 @@ pub fn buildRule(options: zlinter.rules.RuleOptions) zlinter.rules.LintRule {
     return .{ .rule_id = "comment_sentences", .run = &run };
 }
 
-const open_message = "a comment is a sentence: this one does not begin like one (a capital, a digit, a quote, a backtick, or an identifier)";
-const close_message = "a comment is a sentence: this one does not end like one (`.`, `:`, `?`, `!`, a closing bracket, quote or backtick)";
+const open_message = "a comment is a sentence: this one does not begin like one (a capital, a " ++
+    "digit, a quote, a backtick, or an identifier)";
+const close_message = "a comment is a sentence: this one does not end like one (`.`, `:`, `?`, " ++
+    "`!`, a closing bracket, quote or backtick)";
 
-const Block = struct { start: usize, end: usize, first: ?[]const u8, last: ?[]const u8, banner: bool };
+const Block = struct {
+    start: usize,
+    end: usize,
+    first: ?[]const u8,
+    last: ?[]const u8,
+    banner: bool,
+};
 
 fn run(
     rule: zlinter.rules.LintRule,
@@ -87,7 +95,12 @@ fn problem(
 fn commentContent(line: []const u8, prefix: *[]const u8) ?[]const u8 {
     const trimmed = std.mem.trimStart(u8, line, " \t");
     if (!std.mem.startsWith(u8, trimmed, "//")) return null;
-    const kind: []const u8 = if (std.mem.startsWith(u8, trimmed, "//!")) "//!" else if (std.mem.startsWith(u8, trimmed, "///") and !std.mem.startsWith(u8, trimmed, "////")) "///" else "//";
+    const kind: []const u8 = if (std.mem.startsWith(u8, trimmed, "//!"))
+        "//!"
+    else if (std.mem.startsWith(u8, trimmed, "///") and !std.mem.startsWith(u8, trimmed, "////"))
+        "///"
+    else
+        "//";
     prefix.* = kind;
     return trimmed[kind.len..];
 }
@@ -123,7 +136,13 @@ fn nextBlock(source: []const u8, pos: *usize) ?Block {
         line_start = line_end + 1;
     }
     if (line_start >= source.len) return null;
-    var block: Block = .{ .start = line_start, .end = line_start, .first = null, .last = null, .banner = false };
+    var block: Block = .{
+        .start = line_start,
+        .end = line_start,
+        .first = null,
+        .last = null,
+        .banner = false,
+    };
     var first_line = true;
     var after_prose = false;
     var at = line_start;
@@ -175,7 +194,7 @@ fn closesLikeASentence(t: []const u8) bool {
     return std.mem.endsWith(u8, t, "…");
 }
 
-test "a block that opens or closes unlike a sentence is flagged; identifiers, banners, diagrams and references are not" {
+test "a block opening or closing unlike a sentence is flagged; code, banners and markers are not" {
     const rule = buildRule(.{});
     const source =
         \\// A sentence, with a period.
@@ -207,10 +226,26 @@ test "a block that opens or closes unlike a sentence is flagged; identifiers, ba
     ;
     // zlinter's rules report in source order here: one block, two problems, in order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "comment_sentences", .severity = .warning, .slice = "// lowercase start, and no end", .message = open_message },
-        .{ .rule_id = "comment_sentences", .severity = .warning, .slice = "// lowercase start, and no end", .message = close_message },
+        .{
+            .rule_id = "comment_sentences",
+            .severity = .warning,
+            .slice = "// lowercase start, and no end",
+            .message = open_message,
+        },
+        .{
+            .rule_id = "comment_sentences",
+            .severity = .warning,
+            .slice = "// lowercase start, and no end",
+            .message = close_message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

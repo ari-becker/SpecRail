@@ -56,11 +56,26 @@ const Analyzer = struct {
 
     /// Finds the section a reference or dependency entry names. Reports
     /// dangling and stale ones at `where` and returns null for them.
-    fn resolve(a: *Analyzer, kind: Kind, form: refs.Form, where: Location) Allocator.Error!?*spec.Section {
-        const at: diag.Diagnostic = .{ .path = where.path, .line = where.line, .column = where.column, .severity = .err, .message = "", .subject = form.path };
+    fn resolve(
+        a: *Analyzer,
+        kind: Kind,
+        form: refs.Form,
+        where: Location,
+    ) Allocator.Error!?*spec.Section {
+        const at: diag.Diagnostic = .{
+            .path = where.path,
+            .line = where.line,
+            .column = where.column,
+            .severity = .err,
+            .message = "",
+            .subject = form.path,
+        };
         const index = a.by_path.get(form.path) orelse {
             var d = at;
-            d.message = try a.print("dangling {s}: there is no spec file {s}", .{ kind.name(), form.path });
+            d.message = try a.print(
+                "dangling {s}: there is no spec file {s}",
+                .{ kind.name(), form.path },
+            );
             try a.report(d);
             return null;
         };
@@ -77,15 +92,29 @@ const Analyzer = struct {
         }
         var d = at;
         if (by_number == null and by_title.items.len == 0) {
-            d.message = try a.print("dangling {s} to § {s} {s}: {s} has no § {s} and no section titled '{s}'", .{ kind.name(), form.number, form.title, form.path, form.number, form.title });
+            d.message = try a.print(
+                "dangling {s} to § {s} {s}: {s} has no § {s} and no section titled '{s}'",
+                .{ kind.name(), form.number, form.title, form.path, form.number, form.title },
+            );
         } else {
             var current: std.ArrayList(u8) = .empty;
-            if (by_number) |i| try current.print(a.arena, "§ {s} {s}", .{ sf.sections[i].number, sf.sections[i].title });
+            if (by_number) |i| try current.print(
+                a.arena,
+                "§ {s} {s}",
+                .{ sf.sections[i].number, sf.sections[i].title },
+            );
             for (by_title.items) |i| {
                 if (current.items.len > 0) try current.appendSlice(a.arena, " and ");
-                try current.print(a.arena, "§ {s} {s}", .{ sf.sections[i].number, sf.sections[i].title });
+                try current.print(
+                    a.arena,
+                    "§ {s} {s}",
+                    .{ sf.sections[i].number, sf.sections[i].title },
+                );
             }
-            d.message = try a.print("stale {s} to § {s} {s}: {s} now has {s}", .{ kind.name(), form.number, form.title, form.path, current.items });
+            d.message = try a.print(
+                "stale {s} to § {s} {s}: {s} now has {s}",
+                .{ kind.name(), form.number, form.title, form.path, current.items },
+            );
         }
         try a.report(d);
         return null;
@@ -96,7 +125,10 @@ const Analyzer = struct {
 /// reports coverage, unfinished work and expired claims. `now` is seconds since
 /// the epoch.
 pub fn analyze(arena: Allocator, input: Input, now: i64) Allocator.Error!Analysis {
-    var a: Analyzer = .{ .arena = arena, .specs = try arena.alloc(spec.SpecFile, input.spec_files.len) };
+    var a: Analyzer = .{
+        .arena = arena,
+        .specs = try arena.alloc(spec.SpecFile, input.spec_files.len),
+    };
     for (input.spec_files, 0..) |f, i| {
         a.specs[i] = try spec.parse(arena, f.path, f.content, &a.out);
         try a.by_path.put(arena, f.path, i);
@@ -121,7 +153,11 @@ fn scanReferences(a: *Analyzer, f: project.SourceFile) Allocator.Error!void {
                 .message = try a.print("malformed reference: {s}", .{msg}),
             }),
             .ok => |form| {
-                const where: Location = .{ .path = f.path, .line = found.line, .column = found.ref.column };
+                const where: Location = .{
+                    .path = f.path,
+                    .line = found.line,
+                    .column = found.ref.column,
+                };
                 const target = (try a.resolve(.reference, form, where)) orelse continue :lines;
                 if (!target.is_leaf) {
                     try a.report(.{
@@ -129,7 +165,11 @@ fn scanReferences(a: *Analyzer, f: project.SourceFile) Allocator.Error!void {
                         .line = found.line,
                         .column = found.ref.column,
                         .severity = .err,
-                        .message = try a.print("reference to § {s} {s} names a parent section; reference its leaves instead", .{ target.number, target.title }),
+                        .message = try a.print(
+                            "reference to § {s} {s} names a parent section; reference its " ++
+                                "leaves instead",
+                            .{ target.number, target.title },
+                        ),
                         .subject = form.path,
                     });
                     continue :lines;
@@ -147,7 +187,11 @@ fn checkDependencies(a: *Analyzer) Allocator.Error!void {
         sections: for (sf.sections) |s| {
             const m = s.metadata orelse continue :sections;
             deps: for (m.dependencies) |dep| {
-                const where: Location = .{ .path = sf.path, .line = dep.line, .column = dep.column };
+                const where: Location = .{
+                    .path = sf.path,
+                    .line = dep.line,
+                    .column = dep.column,
+                };
                 const target = (try a.resolve(.dependency, dep.form, where)) orelse continue :deps;
                 if (s.effective == .done and target.effective != .done) {
                     try a.report(.{
@@ -155,7 +199,17 @@ fn checkDependencies(a: *Analyzer) Allocator.Error!void {
                         .line = dep.line,
                         .column = dep.column,
                         .severity = .err,
-                        .message = try a.print("§ {s} {s} is done, but depends on § {s} {s} in {s}, which is {s}", .{ s.number, s.title, target.number, target.title, dep.form.path, target.effective.name() }),
+                        .message = try a.print(
+                            "§ {s} {s} is done, but depends on § {s} {s} in {s}, which is {s}",
+                            .{
+                                s.number,
+                                s.title,
+                                target.number,
+                                target.title,
+                                dep.form.path,
+                                target.effective.name(),
+                            },
+                        ),
                         .subject = dep.form.path,
                     });
                 }
@@ -174,7 +228,10 @@ fn reportCoverage(a: *Analyzer) Allocator.Error!void {
                     .line = s.line,
                     .column = 1,
                     .severity = .err,
-                    .message = try a.print("§ {s} {s} is not covered: no test references it", .{ s.number, s.title }),
+                    .message = try a.print(
+                        "§ {s} {s} is not covered: no test references it",
+                        .{ s.number, s.title },
+                    ),
                 });
             }
         }
@@ -192,15 +249,31 @@ fn noteUnfinishedWork(a: *Analyzer, now: i64) Allocator.Error!void {
                 errdefer msg.deinit(a.arena);
                 try msg.print(a.arena, "§ {s} {s} is {s}", .{ s.number, s.title, status.name() });
                 if (m.due) |due| {
-                    try msg.print(a.arena, "; due {d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(due.year)), due.month, due.day });
+                    try msg.print(
+                        a.arena,
+                        "; due {d:0>4}-{d:0>2}-{d:0>2}",
+                        .{ @as(u32, @intCast(due.year)), due.month, due.day },
+                    );
                     if (date.isOverdue(due, now)) try msg.appendSlice(a.arena, ", overdue");
                 }
                 if (m.assigned) |who| {
                     try msg.print(a.arena, "; assigned to {s}", .{who});
-                    if (m.assigned_until) |until| try msg.print(a.arena, " until {s}", .{until.text});
+                    if (m.assigned_until) |until| try msg.print(
+                        a.arena,
+                        " until {s}",
+                        .{until.text},
+                    );
                 }
                 const message = try msg.toOwnedSlice(a.arena);
-                try a.report(.{ .path = sf.path, .line = s.line, .column = 1, .severity = .note, .message = message });
+                try a.report(
+                    .{
+                        .path = sf.path,
+                        .line = s.line,
+                        .column = 1,
+                        .severity = .note,
+                        .message = message,
+                    },
+                );
             };
             if (m.assigned_until) |until| if (until.seconds < now) {
                 try a.report(.{
@@ -208,7 +281,10 @@ fn noteUnfinishedWork(a: *Analyzer, now: i64) Allocator.Error!void {
                     .line = s.line,
                     .column = 1,
                     .severity = .note,
-                    .message = try a.print("the claim on § {s} {s} by {s} expired at {s}", .{ s.number, s.title, m.assigned orelse "nobody", until.text }),
+                    .message = try a.print(
+                        "the claim on § {s} {s} by {s} expired at {s}",
+                        .{ s.number, s.title, m.assigned orelse "nobody", until.text },
+                    ),
                 });
             };
         }
@@ -238,7 +314,12 @@ fn contains(list: []const []const u8, item: []const u8) bool {
 
 /// Scopes, sorts and counts. `selected` limits the report to those spec files
 /// and the references and dependency entries that name them.
-pub fn finish(arena: Allocator, analysis: Analysis, selected: ?[]const []const u8, warnings_as_errors: bool) Allocator.Error!Report {
+pub fn finish(
+    arena: Allocator,
+    analysis: Analysis,
+    selected: ?[]const []const u8,
+    warnings_as_errors: bool,
+) Allocator.Error!Report {
     var kept: std.ArrayList(diag.Diagnostic) = .empty;
     errdefer kept.deinit(arena);
     var stats: Stats = .{};
@@ -282,7 +363,8 @@ fn plural(n: u32, one: []const u8, many: []const u8) []const u8 {
 pub fn writeText(w: *Writer, r: Report, color: bool) Writer.Error!void {
     for (r.diagnostics) |d| try diag.write(w, d, color);
     const s = r.stats;
-    try w.print("check: {d} {s}, {d} {s}; {d}/{d} done leaves covered; {d} planned, {d} in progress\n", .{
+    try w.print("check: {d} {s}, {d} {s}; {d}/{d} done leaves covered; {d} planned, {d} in " ++
+        "progress\n", .{
         s.errors,         plural(s.errors, "error", "errors"),
         s.warnings,       plural(s.warnings, "warning", "warnings"),
         s.covered_leaves, s.done_leaves,
@@ -298,9 +380,18 @@ pub fn writeJson(w: *Writer, r: Report) Writer.Error!void {
         try diag.writeJson(w, d);
     }
     const s = r.stats;
-    try w.print("],\"summary\":{{\"errors\":{d},\"warnings\":{d},\"done_leaves\":{d},\"covered_leaves\":{d},\"planned_leaves\":{d},\"in_progress_leaves\":{d}}}}}\n", .{
-        s.errors, s.warnings, s.done_leaves, s.covered_leaves, s.planned_leaves, s.in_progress_leaves,
-    });
+    try w.print(
+        "],\"summary\":{{\"errors\":{d},\"warnings\":{d},\"done_leaves\":{d}," ++
+            "\"covered_leaves\":{d},\"planned_leaves\":{d},\"in_progress_leaves\":{d}}}}}\n",
+        .{
+            s.errors,
+            s.warnings,
+            s.done_leaves,
+            s.covered_leaves,
+            s.planned_leaves,
+            s.in_progress_leaves,
+        },
+    );
 }
 
 /// Command-line options for `specrail check`.
@@ -341,11 +432,20 @@ pub fn run(ctx: *cli.Ctx, opts: Options) cli.Error!u8 {
                     if (!contains(sel.items, f.path)) try sel.append(ctx.arena, f.path);
                 }
             }
-            if (!matched) return cli.usageError(ctx, "check", "'{s}' is not a spec file or a directory of spec files", .{arg});
+            if (!matched) return cli.usageError(
+                ctx,
+                "check",
+                "'{s}' is not a spec file or a directory of spec files",
+                .{arg},
+            );
         }
         selected = sel.items;
     }
-    const analysis = try analyze(ctx.arena, .{ .spec_files = p.spec_files, .source_files = p.source_files }, ctx.now);
+    const analysis = try analyze(
+        ctx.arena,
+        .{ .spec_files = p.spec_files, .source_files = p.source_files },
+        ctx.now,
+    );
     const r = try finish(ctx.arena, analysis, selected, opts.warnings_as_errors);
     if (opts.json) try writeJson(ctx.stdout, r) else try writeText(ctx.stdout, r, ctx.color);
     return if (r.stats.errors > 0) 1 else 0;
@@ -370,11 +470,22 @@ const Checked = struct {
         return finish(self.arena.allocator(), self.analysis, selected, warnings_as_errors);
     }
 
-    fn expect(self: *const Checked, path: []const u8, line: u32, severity: diag.Severity, needle: []const u8) !void {
+    fn expect(
+        self: *const Checked,
+        path: []const u8,
+        line: u32,
+        severity: diag.Severity,
+        needle: []const u8,
+    ) !void {
         for (self.analysis.diagnostics.items) |d| {
-            if (std.mem.eql(u8, d.path, path) and d.line == line and d.severity == severity and std.mem.find(u8, d.message, needle) != null) return;
+            const same_place = std.mem.eql(u8, d.path, path) and d.line == line;
+            const says = std.mem.find(u8, d.message, needle) != null;
+            if (same_place and d.severity == severity and says) return;
         }
-        std.debug.print("no {s} containing '{s}' at {s}:{d}; got:\n", .{ severity.name(), needle, path, line });
+        std.debug.print(
+            "no {s} containing '{s}' at {s}:{d}; got:\n",
+            .{ severity.name(), needle, path, line },
+        );
         self.dump();
         return error.TestUnexpectedResult;
     }
@@ -389,13 +500,23 @@ const Checked = struct {
     }
 
     fn dump(self: *const Checked) void {
-        for (self.analysis.diagnostics.items) |d| std.debug.print("  {s}:{d}:{d}: {s}: {s}\n", .{ d.path, d.line, d.column, d.severity.name(), d.message });
+        for (self.analysis.diagnostics.items) |d| std.debug.print(
+            "  {s}:{d}:{d}: {s}: {s}\n",
+            .{ d.path, d.line, d.column, d.severity.name(), d.message },
+        );
     }
 };
 
-fn checkTest(spec_files: []const project.SourceFile, source_files: []const project.SourceFile) !Checked {
+fn checkTest(
+    spec_files: []const project.SourceFile,
+    source_files: []const project.SourceFile,
+) !Checked {
     var c: Checked = .{ .arena = .init(testing.allocator), .analysis = undefined };
-    c.analysis = try analyze(c.arena.allocator(), .{ .spec_files = spec_files, .source_files = source_files }, test_now);
+    c.analysis = try analyze(
+        c.arena.allocator(),
+        .{ .spec_files = spec_files, .source_files = source_files },
+        test_now,
+    );
     return c;
 }
 
@@ -434,7 +555,12 @@ test "references that match only the number or only the title are stale" {
         \\// specrail: specs/login.spec.md § 1.1   Password
     }});
     defer c.deinit();
-    try c.expect("t.zig", 1, .err, "stale reference to § 1.1 Passphrase: specs/login.spec.md now has § 1.1 Password");
+    try c.expect(
+        "t.zig",
+        1,
+        .err,
+        "stale reference to § 1.1 Passphrase: specs/login.spec.md now has § 1.1 Password",
+    );
     try c.expect("t.zig", 2, .err, "now has § 1.2 Google");
     try c.expect("t.zig", 3, .err, "stale reference");
     try testing.expectEqual(@as(usize, 3), c.analysis.diagnostics.items.len - 1);
@@ -442,14 +568,20 @@ test "references that match only the number or only the title are stale" {
 
 // specrail: specs/format/references.spec.md § 3.3 References name leaves
 test "a reference to a parent section is an error" {
-    var c = try checkTest(&.{login_spec}, &.{.{ .path = "t.zig", .content = "// specrail: specs/login.spec.md § 1 Login\n" }});
+    var c = try checkTest(
+        &.{login_spec},
+        &.{.{ .path = "t.zig", .content = "// specrail: specs/login.spec.md § 1 Login\n" }},
+    );
     defer c.deinit();
     try c.expect("t.zig", 1, .err, "names a parent section");
 }
 
 // specrail: specs/format/references.spec.md § 1.4 Malformed references
 test "malformed references are reported where they are" {
-    var c = try checkTest(&.{login_spec}, &.{.{ .path = "t.zig", .content = "x\n# specrail: specs/login.spec.md 1.1 Password\n" }});
+    var c = try checkTest(
+        &.{login_spec},
+        &.{.{ .path = "t.zig", .content = "x\n# specrail: specs/login.spec.md 1.1 Password\n" }},
+    );
     defer c.deinit();
     try c.expect("t.zig", 2, .err, "malformed reference");
 }
@@ -494,9 +626,15 @@ test "dependency entries are checked like references, but may name parents" {
     var c = try checkTest(&.{ login_spec, deps_spec }, &.{});
     defer c.deinit();
     try c.expect("specs/deps.spec.md", 12, .err, "stale dependency to § 1 Logon");
-    try c.expect("specs/deps.spec.md", 13, .err, "dangling dependency: there is no spec file specs/missing.spec.md");
+    try c.expect(
+        "specs/deps.spec.md",
+        13,
+        .err,
+        "dangling dependency: there is no spec file specs/missing.spec.md",
+    );
     for (c.analysis.diagnostics.items) |d| {
-        if (d.line == 11 and std.mem.eql(u8, d.path, "specs/deps.spec.md")) return error.TestUnexpectedResult;
+        const in_deps = std.mem.eql(u8, d.path, "specs/deps.spec.md");
+        if (d.line == 11 and in_deps) return error.TestUnexpectedResult;
     }
 }
 
@@ -504,7 +642,13 @@ test "dependency entries are checked like references, but may name parents" {
 test "a done section cannot depend on unfinished work" {
     var c = try checkTest(&.{ login_spec, deps_spec }, &.{});
     defer c.deinit();
-    try c.expect("specs/deps.spec.md", 3, .err, "§ 1 Waits on planned work is done, but depends on § 1.2 Google in specs/login.spec.md, which is planned");
+    try c.expect(
+        "specs/deps.spec.md",
+        3,
+        .err,
+        "§ 1 Waits on planned work is done, but depends on § 1.2 Google in specs/login.spec.md, " ++
+            "which is planned",
+    );
 }
 
 const notes_spec: project.SourceFile = .{ .path = "specs/notes.spec.md", .content =
@@ -533,10 +677,22 @@ const notes_spec: project.SourceFile = .{ .path = "specs/notes.spec.md", .conten
 test "unfinished work is noted once per declaration" {
     var c = try checkTest(&.{notes_spec}, &.{});
     defer c.deinit();
-    try c.expect("specs/notes.spec.md", 1, .note, "§ 1 Planned area is planned; due 2026-11-15, overdue; assigned to agent-7 until 2026-11-17T11:00:00Z");
-    try c.expect("specs/notes.spec.md", 12, .note, "§ 2 In progress is in-progress; due 2026-11-17");
+    try c.expect(
+        "specs/notes.spec.md",
+        1,
+        .note,
+        "§ 1 Planned area is planned; due 2026-11-15, overdue; assigned to agent-7 until " ++
+            "2026-11-17T11:00:00Z",
+    );
+    try c.expect(
+        "specs/notes.spec.md",
+        12,
+        .note,
+        "§ 2 In progress is in-progress; due 2026-11-17",
+    );
     for (c.analysis.diagnostics.items) |d| {
-        if (d.line == 12 and std.mem.find(u8, d.message, "overdue") != null) return error.TestUnexpectedResult;
+        const overdue = std.mem.find(u8, d.message, "overdue") != null;
+        if (d.line == 12 and overdue) return error.TestUnexpectedResult;
         if (d.line == 8) return error.TestUnexpectedResult;
     }
 }
@@ -545,7 +701,12 @@ test "unfinished work is noted once per declaration" {
 test "expired claims are noted with their assignee" {
     var c = try checkTest(&.{notes_spec}, &.{});
     defer c.deinit();
-    try c.expect("specs/notes.spec.md", 1, .note, "the claim on § 1 Planned area by agent-7 expired at 2026-11-17T11:00:00Z");
+    try c.expect(
+        "specs/notes.spec.md",
+        1,
+        .note,
+        "the claim on § 1 Planned area by agent-7 expired at 2026-11-17T11:00:00Z",
+    );
 }
 
 // specrail: specs/cli/check.spec.md § 2.1 Whole project
@@ -561,7 +722,9 @@ test "check reports everything at once, or only what concerns selected specs" {
     const only_login = try c.report(&.{"specs/login.spec.md"}, false);
     try testing.expectEqual(@as(u32, 4), only_login.stats.errors);
     for (only_login.diagnostics) |d| {
-        try testing.expect(std.mem.eql(u8, d.path, "specs/login.spec.md") or std.mem.eql(u8, d.subject.?, "specs/login.spec.md"));
+        const in_login = std.mem.eql(u8, d.path, "specs/login.spec.md");
+        const about_login = if (d.subject) |s| std.mem.eql(u8, s, "specs/login.spec.md") else false;
+        try testing.expect(in_login or about_login);
     }
     try testing.expectEqual(@as(u32, 1), only_login.stats.done_leaves);
 }
@@ -573,7 +736,13 @@ test "the text output ends with a summary line" {
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
     try writeText(&out.writer, try c.report(null, false), false);
-    try testing.expect(std.mem.endsWith(u8, out.written(), "\ncheck: 1 error, 0 warnings; 0/1 done leaves covered; 1 planned, 0 in progress\n"));
+    try testing.expect(
+        std.mem.endsWith(
+            u8,
+            out.written(),
+            "\ncheck: 1 error, 0 warnings; 0/1 done leaves covered; 1 planned, 0 in progress\n",
+        ),
+    );
 }
 
 // specrail: specs/cli/check.spec.md § 3.7 JSON output
@@ -585,17 +754,28 @@ test "JSON output holds the diagnostics and the summary" {
     defer out.deinit();
     try writeJson(&out.writer, try c.report(null, false));
     try testing.expectEqualStrings(
-        "{\"diagnostics\":[{\"path\":\"specs/login.spec.md\",\"line\":2,\"column\":1,\"severity\":\"error\"," ++
+        "{\"diagnostics\":[" ++
+            "{\"path\":\"specs/login.spec.md\",\"line\":2,\"column\":1,\"severity\":\"error\"," ++
             "\"message\":\"§ 1.1 Password is not covered: no test references it\"}," ++
-            "{\"path\":\"specs/login.spec.md\",\"line\":6,\"column\":1,\"severity\":\"note\",\"message\":\"§ 1.2 Google is planned\"}]," ++
-            "\"summary\":{\"errors\":1,\"warnings\":0,\"done_leaves\":1,\"covered_leaves\":0,\"planned_leaves\":1,\"in_progress_leaves\":0}}\n",
+            "{\"path\":\"specs/login.spec.md\",\"line\":6,\"column\":1,\"severity\":\"note\"," ++
+            "\"message\":\"§ 1.2 Google is planned\"}]," ++
+            "\"summary\":{\"errors\":1,\"warnings\":0,\"done_leaves\":1,\"covered_leaves\":0," ++
+            "\"planned_leaves\":1,\"in_progress_leaves\":0}}\n",
         out.written(),
     );
 }
 
 // specrail: specs/cli/check.spec.md § 4.2 Warnings as errors
 test "warnings can be reported as errors" {
-    var c = try checkTest(&.{.{ .path = "specs/w.spec.md", .content = "# § 1 Draft\n```toml\nstatus = \"planned\"\n```\nTBD.\n" }}, &.{});
+    var c = try checkTest(
+        &.{
+            .{
+                .path = "specs/w.spec.md",
+                .content = "# § 1 Draft\n```toml\nstatus = \"planned\"\n```\nTBD.\n",
+            },
+        },
+        &.{},
+    );
     defer c.deinit();
     const normal = try c.report(null, false);
     try testing.expectEqual(@as(u32, 0), normal.stats.errors);

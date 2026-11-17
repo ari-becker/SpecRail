@@ -79,7 +79,12 @@ fn isHelp(arg: []const u8) bool {
 }
 
 /// Prints a usage error with a hint, and returns exit status 2.
-pub fn usageError(ctx: *Ctx, command: ?[]const u8, comptime fmt: []const u8, args: anytype) Io.Writer.Error!u8 {
+pub fn usageError(
+    ctx: *Ctx,
+    command: ?[]const u8,
+    comptime fmt: []const u8,
+    args: anytype,
+) Io.Writer.Error!u8 {
     try ctx.stderr.print("specrail: " ++ fmt ++ "\n", args);
     if (command) |c| {
         try ctx.stderr.print("Run 'specrail {s} --help' for usage.\n", .{c});
@@ -105,7 +110,12 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
         if (std.mem.eql(u8, a, "--color") or std.mem.startsWith(u8, a, "--color=")) {
             const value = if (a.len > "--color=".len) a["--color=".len..] else "";
             mode = std.meta.stringToEnum(ColorMode, value) orelse
-                return usageError(ctx, null, "--color takes auto, always or never, as in --color=never", .{});
+                return usageError(
+                    ctx,
+                    null,
+                    "--color takes auto, always or never, as in --color=never",
+                    .{},
+                );
         } else try args.append(ctx.arena, a);
     }
     ctx.color = useColor(mode, ctx.stdout_is_tty, ctx.no_color);
@@ -115,7 +125,12 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
         try writeHelp(ctx.stdout);
         return 0;
     }
-    if (std.mem.startsWith(u8, cmd, "-")) return usageError(ctx, null, "unknown option '{s}'", .{cmd});
+    if (std.mem.startsWith(u8, cmd, "-")) return usageError(
+        ctx,
+        null,
+        "unknown option '{s}'",
+        .{cmd},
+    );
     if (std.mem.eql(u8, cmd, "check")) return runCheck(ctx, args.items[1..]);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
 }
@@ -152,7 +167,11 @@ const Sandbox = struct {
     root: []const u8,
 
     fn init() !Sandbox {
-        var s: Sandbox = .{ .tmp = testing.tmpDir(.{}), .arena_state = .init(testing.allocator), .root = undefined };
+        var s: Sandbox = .{
+            .tmp = testing.tmpDir(.{}),
+            .arena_state = .init(testing.allocator),
+            .root = undefined,
+        };
         s.root = try s.tmp.dir.realPathFileAlloc(testing.io, ".", s.arena_state.allocator());
         try s.git(&.{ "git", "init", "-q" });
         return s;
@@ -164,7 +183,11 @@ const Sandbox = struct {
     }
 
     fn git(s: *Sandbox, argv: []const []const u8) !void {
-        const r = try std.process.run(s.arena_state.allocator(), testing.io, .{ .argv = argv, .cwd = .{ .path = s.root } });
+        const r = try std.process.run(
+            s.arena_state.allocator(),
+            testing.io,
+            .{ .argv = argv, .cwd = .{ .path = s.root } },
+        );
         if (!r.term.success()) return error.GitFailed;
     }
 
@@ -353,7 +376,10 @@ test "spec files, excluded files and binary files are not scanned" {
     var s = try Sandbox.init();
     defer s.deinit();
     try s.write("specrail.toml", "spec_root = \"specs\"\nexclude = [\"docs/**\"]\n");
-    try s.write("specs/a.spec.md", "# § 1 One\n\nIt MUST work.\n\n```\n// specrail: specs/nope.spec.md § 1 Example\n```\n");
+    try s.write(
+        "specs/a.spec.md",
+        "# § 1 One\n\nIt MUST work.\n\n```\n// specrail: specs/nope.spec.md § 1 Example\n```\n",
+    );
     try s.write("docs/guide.md", "// specrail: specs/nope.spec.md § 1 Example\n");
     try s.write("blob.bin", "\x00// specrail: specs/nope.spec.md § 1 Example\n");
     try s.write("t.zig", "// specrail: specs/a.spec.md § 1 One\n");

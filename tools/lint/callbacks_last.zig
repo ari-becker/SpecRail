@@ -65,7 +65,10 @@ fn run(
                 try problems.append(session_arena, .{
                     .rule_id = rule.rule_id,
                     .severity = config.severity,
-                    .start = if (cb.name_token) |t| .startOfToken(tree, t) else .startOfNode(tree, cb.type_expr.?),
+                    .start = if (cb.name_token) |t|
+                        .startOfToken(tree, t)
+                    else
+                        .startOfNode(tree, cb.type_expr.?),
                     .end = .endOfNode(tree, cb.type_expr.?),
                     .message = try session_arena.dupe(u8, message),
                 });
@@ -86,7 +89,9 @@ fn isFnType(tree: Ast, type_expr: Ast.Node.Index) bool {
     // Each step goes one node deeper into the type, so there are fewer steps than nodes.
     for (0..tree.nodes.len) |_| {
         const tag = tree.nodeTag(node);
-        if (tag == .fn_proto_simple or tag == .fn_proto_multi or tag == .fn_proto_one or tag == .fn_proto) {
+        if (tag == .fn_proto_simple or tag == .fn_proto_multi or tag == .fn_proto_one or
+            tag == .fn_proto)
+        {
             return true;
         }
         if (tag == .optional_type) {
@@ -99,7 +104,7 @@ fn isFnType(tree: Ast, type_expr: Ast.Node.Index) bool {
     return false;
 }
 
-test "a callback followed by a plain parameter is flagged; last, or followed only by callbacks, is not" {
+test "a callback before a plain parameter is flagged; last, or before callbacks only, is not" {
     const rule = buildRule(.{});
     const source =
         \\const Cb = *const fn (x: u32) void;
@@ -119,15 +124,48 @@ test "a callback followed by a plain parameter is flagged; last, or followed onl
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     // `named` passes: `Cb` is a name, and the rule reads types, not what they resolve to.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "callbacks_last", .severity = .warning, .slice = "cb: fn () void", .message = message },
-        .{ .rule_id = "callbacks_last", .severity = .warning, .slice = "done: ?fn (u32) void", .message = message },
-        .{ .rule_id = "callbacks_last", .severity = .warning, .slice = "cb: *const fn (x: u32) void", .message = message },
+        .{
+            .rule_id = "callbacks_last",
+            .severity = .warning,
+            .slice = "cb: fn () void",
+            .message = message,
+        },
+        .{
+            .rule_id = "callbacks_last",
+            .severity = .warning,
+            .slice = "done: ?fn (u32) void",
+            .message = message,
+        },
+        .{
+            .rule_id = "callbacks_last",
+            .severity = .warning,
+            .slice = "cb: *const fn (x: u32) void",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = true }, &.{
-        .{ .rule_id = "callbacks_last", .severity = .warning, .slice = "done: ?fn (u32) void", .message = message },
-        .{ .rule_id = "callbacks_last", .severity = .warning, .slice = "cb: *const fn (x: u32) void", .message = message },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = true }, &.{
+        .{
+            .rule_id = "callbacks_last",
+            .severity = .warning,
+            .slice = "done: ?fn (u32) void",
+            .message = message,
+        },
+        .{
+            .rule_id = "callbacks_last",
+            .severity = .warning,
+            .slice = "cb: *const fn (x: u32) void",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

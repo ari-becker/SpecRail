@@ -9,7 +9,8 @@
 //!
 //! A float ratio has no builtin to reach for — `@divExact` on a float that does not
 //! divide evenly is a trap, and floor, ceil and trunc are not what a ratio means — so a line
-//! that divides floats says so, on the line or the one above: `// float`. It is the one thing a syntax rule cannot
+//! that divides floats says so, on the line or the one above: `// float`. It is the one thing a
+//! syntax rule cannot
 //! see, and the only marker this rule accepts.
 
 /// The rule's options, as set in `build.zig`.
@@ -26,7 +27,8 @@ pub fn buildRule(options: zlinter.rules.RuleOptions) zlinter.rules.LintRule {
 }
 
 const marker = "// float";
-const message = "`/` does not say how it rounds: `@divExact`, `@divFloor`, `@divCeil` or `@divTrunc` does, and a float ratio says `// float`";
+const message = "`/` does not say how it rounds: `@divExact`, `@divFloor`, `@divCeil` or " ++
+    "`@divTrunc` does, and a float ratio says `// float`";
 
 fn run(
     rule: zlinter.rules.LintRule,
@@ -113,11 +115,19 @@ test "a bare division is flagged; a builtin, and a marked float ratio, are not" 
         .{ .rule_id = "div_intent", .severity = .warning, .slice = "acc /= b", .message = message },
         .{ .rule_id = "div_intent", .severity = .warning, .slice = "a / 2", .message = message },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = true }, &.{
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = true }, &.{
         .{ .rule_id = "div_intent", .severity = .warning, .slice = "acc /= b", .message = message },
         .{ .rule_id = "div_intent", .severity = .warning, .slice = "a / 2", .message = message },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

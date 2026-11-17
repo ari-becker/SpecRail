@@ -90,15 +90,48 @@ test "an assert of an `and` is flagged; one condition, an `or`, and other calls 
     ;
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "no_compound_assert", .severity = .warning, .slice = "std.debug.assert(true and true)", .message = message },
-        .{ .rule_id = "no_compound_assert", .severity = .warning, .slice = "assert(out.len >= len and len > 0)", .message = message },
-        .{ .rule_id = "no_compound_assert", .severity = .warning, .slice = "std.debug.assert(len >= 1 and len <= 4)", .message = message },
+        .{
+            .rule_id = "no_compound_assert",
+            .severity = .warning,
+            .slice = "std.debug.assert(true and true)",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_compound_assert",
+            .severity = .warning,
+            .slice = "assert(out.len >= len and len > 0)",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_compound_assert",
+            .severity = .warning,
+            .slice = "std.debug.assert(len >= 1 and len <= 4)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = true }, &.{
-        .{ .rule_id = "no_compound_assert", .severity = .warning, .slice = "assert(out.len >= len and len > 0)", .message = message },
-        .{ .rule_id = "no_compound_assert", .severity = .warning, .slice = "std.debug.assert(len >= 1 and len <= 4)", .message = message },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = true }, &.{
+        .{
+            .rule_id = "no_compound_assert",
+            .severity = .warning,
+            .slice = "assert(out.len >= len and len > 0)",
+            .message = message,
+        },
+        .{
+            .rule_id = "no_compound_assert",
+            .severity = .warning,
+            .slice = "std.debug.assert(len >= 1 and len <= 4)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

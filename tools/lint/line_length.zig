@@ -50,7 +50,8 @@ fn run(
                 .start = .{ .byte_offset = start },
                 .end = .{ .byte_offset = end - 1 },
                 .message = try session_arena.print(
-                    "{d} columns; a line fits in {d} — a trailing comma, a break after an operator, or `++`",
+                    "{d} columns; a line fits in {d} — a trailing comma, a break after an " ++
+                        "operator, or `++`",
                     .{ columns, config.columns_max },
                 ),
             });
@@ -81,12 +82,31 @@ test "a long line is flagged with its width; a directive and a string literal li
         \\    \\a string literal line that runs on and on and on and on and on and on and on and on and on and on and on
         \\;
     ;
-    const long = "const a = 1; // a comment that runs on and on and on and on and on and on and on and on and on and on and on";
+    const long = "const a = 1; // a comment that runs on and on and on and on and on and on and " ++
+        "on and on and on and on and on";
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "line_length", .severity = .warning, .slice = long, .message = "108 columns; a line fits in 100 — a trailing comma, a break after an operator, or `++`" },
+        .{
+            .rule_id = "line_length",
+            .severity = .warning,
+            .slice = long,
+            .message = "108 columns; a line fits in 100 — a trailing comma, a break after an " ++
+                "operator, or `++`",
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .columns_max = 120 }, &.{});
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .columns_max = 120 },
+        &.{},
+    );
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

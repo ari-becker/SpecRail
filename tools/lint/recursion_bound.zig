@@ -25,7 +25,8 @@ pub fn buildRule(options: zlinter.rules.RuleOptions) zlinter.rules.LintRule {
 }
 
 const consent = "// bound:";
-const message = "a recursion without a stated bound: say what makes it end on the call's line (`// bound: ...`)";
+const message = "a recursion without a stated bound: say what makes it end on the call's line " ++
+    "(`// bound: ...`)";
 
 fn run(
     rule: zlinter.rules.LintRule,
@@ -61,7 +62,8 @@ fn run(
             if (!callsItself(tree.getNodeSource(call.ast.fn_expr), name)) continue :call_loop;
             const call_start = tree.tokenStart(tree.firstToken(call_node));
             const call_end = tree.tokenStart(tree.lastToken(call_node));
-            if (markedNear(tree.source, .{ .start = call_start, .end = call_end }, consent)) continue :call_loop;
+            const call_span: Span = .{ .start = call_start, .end = call_end };
+            if (markedNear(tree.source, call_span, consent)) continue :call_loop;
             try problems.append(session_arena, .{
                 .rule_id = rule.rule_id,
                 .severity = config.severity,
@@ -142,15 +144,48 @@ test "a self-call without a bound is flagged; with one, or of another function, 
     ;
     // zlinter's lineage iterator hands nodes back last-first: reverse source order.
     try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{}, &.{
-        .{ .rule_id = "recursion_bound", .severity = .warning, .slice = "self.reach(id + 1)", .message = message },
-        .{ .rule_id = "recursion_bound", .severity = .warning, .slice = "walk(n - 1)", .message = message },
+        .{
+            .rule_id = "recursion_bound",
+            .severity = .warning,
+            .slice = "self.reach(id + 1)",
+            .message = message,
+        },
+        .{
+            .rule_id = "recursion_bound",
+            .severity = .warning,
+            .slice = "walk(n - 1)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .exclude_tests = false }, &.{
-        .{ .rule_id = "recursion_bound", .severity = .warning, .slice = "f(n)", .message = message },
-        .{ .rule_id = "recursion_bound", .severity = .warning, .slice = "self.reach(id + 1)", .message = message },
-        .{ .rule_id = "recursion_bound", .severity = .warning, .slice = "walk(n - 1)", .message = message },
+    try zlinter.testing.testRunRule(rule, source, .{
+        .filename = "src/example.zig",
+    }, Config{ .exclude_tests = false }, &.{
+        .{
+            .rule_id = "recursion_bound",
+            .severity = .warning,
+            .slice = "f(n)",
+            .message = message,
+        },
+        .{
+            .rule_id = "recursion_bound",
+            .severity = .warning,
+            .slice = "self.reach(id + 1)",
+            .message = message,
+        },
+        .{
+            .rule_id = "recursion_bound",
+            .severity = .warning,
+            .slice = "walk(n - 1)",
+            .message = message,
+        },
     });
-    try zlinter.testing.testRunRule(rule, source, .{ .filename = "src/example.zig" }, Config{ .severity = .off }, &.{});
+    try zlinter.testing.testRunRule(
+        rule,
+        source,
+        .{ .filename = "src/example.zig" },
+        Config{ .severity = .off },
+        &.{},
+    );
 }
 
 const std = @import("std");

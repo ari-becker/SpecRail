@@ -36,7 +36,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/lint/tests.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "zlinter", .module = b.dependency("zlinter", .{}).module("zlinter") }},
+        .imports = &.{
+            .{ .name = "zlinter", .module = b.dependency("zlinter", .{}).module("zlinter") },
+        },
     }) });
     const run_rule_tests = b.addRunArtifact(rule_tests);
     test_step.dependOn(&run_rule_tests.step);
@@ -51,6 +53,7 @@ const custom_rules = [_][]const u8{
     "comment_sentences",
     "div_intent",
     "fn_length",
+    "line_length",
     "loop_bound",
     "no_compound_assert",
     "no_twin_int_params",
@@ -96,7 +99,10 @@ fn lintStep(b: *std.Build) *std.Build.Step {
     builder.addRule(.{ .builtin = .no_unsafe_undefined }, .{});
     builder.addRule(.{ .builtin = .no_unused }, .{});
     inline for (custom_rules) |name| {
-        builder.addRule(.{ .custom = .{ .name = name, .path = "tools/lint/" ++ name ++ ".zig" } }, .{});
+        builder.addRule(
+            .{ .custom = .{ .name = name, .path = "tools/lint/" ++ name ++ ".zig" } },
+            .{},
+        );
     }
     const lint = builder.build();
     lint.cast(std.Build.Step.Run).?.addArgs(&.{ "--max-warnings", "0" });

@@ -111,7 +111,11 @@ const Parser = struct {
     }
 
     fn failAt(p: *Parser, at: Position, comptime fmt: []const u8, args: anytype) Fail {
-        p.failure = .{ .line = at.line, .column = at.column, .message = try p.arena.print(fmt, args) };
+        p.failure = .{
+            .line = at.line,
+            .column = at.column,
+            .message = try p.arena.print(fmt, args),
+        };
         return error.Invalid;
     }
 
@@ -180,9 +184,16 @@ const Parser = struct {
             if (p.peek() == '#') try p.comment();
             if (!p.atLineEnd()) return p.fail("unexpected text after the value of '{s}'", .{key});
             for (p.entries.items) |e| {
-                if (std.mem.eql(u8, e.key, key)) return p.failAt(key_at, "duplicate key '{s}'", .{key});
+                if (std.mem.eql(u8, e.key, key)) return p.failAt(
+                    key_at,
+                    "duplicate key '{s}'",
+                    .{key},
+                );
             }
-            try p.entries.append(p.arena, .{ .key = key, .value = v, .line = key_at.line, .column = key_at.column });
+            try p.entries.append(
+                p.arena,
+                .{ .key = key, .value = v, .line = key_at.line, .column = key_at.column },
+            );
         }
     }
 
@@ -194,7 +205,10 @@ const Parser = struct {
         if (p.atLineEnd()) return p.fail("expected a value", .{});
         switch (p.peek().?) {
             '"' => {
-                if (p.startsWith("\"\"\"")) return p.fail("multi-line strings are not supported", .{});
+                if (p.startsWith("\"\"\"")) return p.fail(
+                    "multi-line strings are not supported",
+                    .{},
+                );
                 return .{ .string = try p.basicString() };
             },
             '\'' => {
@@ -317,9 +331,10 @@ const Parser = struct {
         const start = p.pos;
         p.scanToken();
         // TOML allows a space instead of `T` between the date and the time.
-        if (p.pos - start == 10 and p.pos + 3 < p.text.len and p.text[p.pos] == ' ' and
-            std.ascii.isDigit(p.text[p.pos + 1]) and std.ascii.isDigit(p.text[p.pos + 2]) and p.text[p.pos + 3] == ':')
-        {
+        const rest = p.text[p.pos..];
+        const spaced_time = p.pos - start == 10 and rest.len > 3 and rest[0] == ' ' and
+            std.ascii.isDigit(rest[1]) and std.ascii.isDigit(rest[2]) and rest[3] == ':';
+        if (spaced_time) {
             p.pos += 1;
             p.scanToken();
         }
@@ -329,13 +344,17 @@ const Parser = struct {
         if (std.mem.eql(u8, tok, "false")) return .{ .boolean = false };
         if (date.looksLikeDate(tok)) {
             if (tok.len == 10) {
-                const d = date.parseDate(tok) orelse return p.failAt(at, "invalid date '{s}'", .{tok});
+                const d = date.parseDate(
+                    tok,
+                ) orelse return p.failAt(at, "invalid date '{s}'", .{tok});
                 return .{ .date = d };
             }
             return switch (date.parseOffsetDateTime(tok)) {
                 .ok => |s| .{ .datetime = .{ .seconds = s, .text = tok } },
                 .no_offset => p.failAt(at, "date-times without an offset are not supported, " ++
-                    "since machines in different time zones would read them differently: '{s}'", .{tok}),
+                    "since machines in different time zones would read them differently: '{s}'", .{
+                    tok,
+                }),
                 .invalid => p.failAt(at, "invalid date-time '{s}'", .{tok}),
             };
         }
@@ -343,7 +362,11 @@ const Parser = struct {
             return p.failAt(at, "local times are not supported: '{s}'", .{tok});
         }
         if (isFloat(tok)) return p.failAt(at, "floats are not supported: '{s}'", .{tok});
-        const n = std.fmt.parseInt(i64, tok, 0) catch return p.failAt(at, "invalid value '{s}'", .{tok});
+        const n = std.fmt.parseInt(
+            i64,
+            tok,
+            0,
+        ) catch return p.failAt(at, "invalid value '{s}'", .{tok});
         return .{ .integer = n };
     }
 };
@@ -374,7 +397,10 @@ fn expectOk(arena: Allocator, text: []const u8) !Document {
     return switch (try parse(arena, text)) {
         .ok => |doc| doc,
         .err => |e| {
-            std.debug.print("unexpected TOML error {d}:{d}: {s}\n", .{ e.line, e.column, e.message });
+            std.debug.print(
+                "unexpected TOML error {d}:{d}: {s}\n",
+                .{ e.line, e.column, e.message },
+            );
             return error.TestUnexpectedResult;
         },
     };

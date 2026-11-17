@@ -21,7 +21,12 @@ pub const Config = struct {
 
 /// The nearest directory, from `start` up through its parents, that holds a
 /// `specrail.toml`. The search does not go above `ceiling`, when given.
-pub fn findProjectRoot(arena: Allocator, io: Io, start: []const u8, ceiling: ?[]const u8) Allocator.Error!?[]const u8 {
+pub fn findProjectRoot(
+    arena: Allocator,
+    io: Io,
+    start: []const u8,
+    ceiling: ?[]const u8,
+) Allocator.Error!?[]const u8 {
     var next: ?[]const u8 = start;
     while (next) |dir| {
         const candidate = try std.Io.Dir.path.join(arena, &.{ dir, file_name });
@@ -48,7 +53,11 @@ fn fail(arena: Allocator, comptime fmt: []const u8, args: anytype) Allocator.Err
 }
 
 fn wrongType(arena: Allocator, e: toml.Entry, expected: []const u8) Allocator.Error!Result {
-    return fail(arena, "{d}:{d}: error: '{s}' must be {s}, not {s}", .{ e.line, e.column, e.key, expected, e.value.kind() });
+    return fail(
+        arena,
+        "{d}:{d}: error: '{s}' must be {s}, not {s}",
+        .{ e.line, e.column, e.key, expected, e.value.kind() },
+    );
 }
 
 /// Normalizes a relative directory path; null when it is absolute or leaves
@@ -73,46 +82,79 @@ pub fn parse(arena: Allocator, io: Io, root: []const u8, text: []const u8) Alloc
         .err => |e| return fail(arena, "{d}:{d}: error: {s}", .{ e.line, e.column, e.message }),
     };
     var cfg: Config = .{ .spec_root = "" };
-    var have_root = false;
     for (doc.entries) |e| {
-        if (std.mem.eql(u8, e.key, "spec_root")) {
-            if (e.value != .string) return wrongType(arena, e, "a string");
-            cfg.spec_root = normalizeDir(e.value.string) orelse
-                return fail(arena, "{d}:{d}: error: 'spec_root' must name a directory inside the project root, not '{s}'", .{ e.line, e.column, e.value.string });
-            have_root = true;
-        } else if (std.mem.eql(u8, e.key, "exclude")) {
-            if (e.value != .array) return wrongType(arena, e, "an array of glob patterns");
-            var patterns: std.ArrayList([]const u8) = .empty;
-            for (e.value.array) |item| {
-                if (item.value != .string) {
-                    return fail(arena, "{d}:{d}: error: 'exclude' patterns must be strings, not {s}", .{ item.line, item.column, item.value.kind() });
-                }
-                try patterns.append(arena, item.value.string);
-            }
-            cfg.exclude = patterns.items;
-        } else if (std.mem.eql(u8, e.key, "claim_branch")) {
-            if (e.value != .string) return wrongType(arena, e, "a string");
-            cfg.claim_branch = e.value.string;
-        } else if (std.mem.eql(u8, e.key, "claim_remote")) {
-            if (e.value != .string) return wrongType(arena, e, "a string");
-            cfg.claim_remote = e.value.string;
-        } else if (std.mem.eql(u8, e.key, "claim_max_hours")) {
-            if (e.value != .integer or e.value.integer <= 0) {
-                return fail(arena, "{d}:{d}: error: 'claim_max_hours' must be a positive integer", .{ e.line, e.column });
-            }
-            cfg.claim_max_hours = e.value.integer;
-        } else {
-            return fail(arena, "{d}:{d}: error: unknown key '{s}'; the keys are spec_root, exclude, claim_branch, claim_remote and claim_max_hours", .{ e.line, e.column, e.key });
-        }
+        if (try readKey(arena, &cfg, e)) |failure| return failure;
     }
-    if (!have_root) {
-        return fail(arena, " error: 'spec_root' is missing; set it to the directory that holds the specs, such as \"specs\"", .{});
+    if (doc.get("spec_root") == null) {
+        return fail(
+            arena,
+            " error: 'spec_root' is missing; set it to the directory that holds the specs, " ++
+                "such as \"specs\"",
+            .{},
+        );
     }
-    const abs = if (cfg.spec_root.len == 0) root else try std.Io.Dir.path.join(arena, &.{ root, cfg.spec_root });
-    const st = Io.Dir.cwd().statFile(io, abs, .{}) catch
+    const abs = if (cfg.spec_root.len == 0)
+        root
+    else
+        try std.Io.Dir.path.join(arena, &.{ root, cfg.spec_root });
+    const st = Io.Dir.cwd().statFile(io, abs, .{}) catch {
         return fail(arena, " error: spec_root '{s}' does not exist", .{cfg.spec_root});
-    if (st.kind != .directory) return fail(arena, " error: spec_root '{s}' is not a directory", .{cfg.spec_root});
+    };
+    if (st.kind != .directory) {
+        return fail(arena, " error: spec_root '{s}' is not a directory", .{cfg.spec_root});
+    }
     return .{ .ok = cfg };
+}
+
+/// Reads one key of `specrail.toml` into `cfg`. Returns the failure when the key
+/// is unknown or its value is invalid.
+fn readKey(arena: Allocator, cfg: *Config, e: toml.Entry) Allocator.Error!?Result {
+    if (std.mem.eql(u8, e.key, "spec_root")) {
+        if (e.value != .string) return try wrongType(arena, e, "a string");
+        cfg.spec_root = normalizeDir(e.value.string) orelse return try fail(
+            arena,
+            "{d}:{d}: error: 'spec_root' must name a directory inside the project root, not '{s}'",
+            .{ e.line, e.column, e.value.string },
+        );
+    } else if (std.mem.eql(u8, e.key, "exclude")) {
+        if (e.value != .array) return try wrongType(arena, e, "an array of glob patterns");
+        var patterns: std.ArrayList([]const u8) = .empty;
+        errdefer patterns.deinit(arena);
+        for (e.value.array) |item| {
+            if (item.value != .string) {
+                return try fail(
+                    arena,
+                    "{d}:{d}: error: 'exclude' patterns must be strings, not {s}",
+                    .{ item.line, item.column, item.value.kind() },
+                );
+            }
+            try patterns.append(arena, item.value.string);
+        }
+        cfg.exclude = try patterns.toOwnedSlice(arena);
+    } else if (std.mem.eql(u8, e.key, "claim_branch")) {
+        if (e.value != .string) return try wrongType(arena, e, "a string");
+        cfg.claim_branch = e.value.string;
+    } else if (std.mem.eql(u8, e.key, "claim_remote")) {
+        if (e.value != .string) return try wrongType(arena, e, "a string");
+        cfg.claim_remote = e.value.string;
+    } else if (std.mem.eql(u8, e.key, "claim_max_hours")) {
+        if (e.value != .integer or e.value.integer <= 0) {
+            return try fail(
+                arena,
+                "{d}:{d}: error: 'claim_max_hours' must be a positive integer",
+                .{ e.line, e.column },
+            );
+        }
+        cfg.claim_max_hours = e.value.integer;
+    } else {
+        return try fail(
+            arena,
+            "{d}:{d}: error: unknown key '{s}'; the keys are spec_root, exclude, " ++
+                "claim_branch, claim_remote and claim_max_hours",
+            .{ e.line, e.column, e.key },
+        );
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------- tests
@@ -148,7 +190,10 @@ test "the project root is the nearest directory up with specrail.toml" {
     const base = try tmp.dir.realPathFileAlloc(testing.io, ".", arena);
     const deeper = try std.Io.Dir.path.join(arena, &.{ base, "outer/inner/deeper" });
     const found = (try findProjectRoot(arena, testing.io, deeper, null)).?;
-    try testing.expectEqualStrings(try std.Io.Dir.path.join(arena, &.{ base, "outer/inner" }), found);
+    try testing.expectEqualStrings(
+        try std.Io.Dir.path.join(arena, &.{ base, "outer/inner" }),
+        found,
+    );
 }
 
 // specrail: specs/config.spec.md § 2.1 Spec root
@@ -159,11 +204,20 @@ test "spec_root must name an existing directory inside the project" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(arena, &tmp);
-    try testing.expectEqualStrings("specs", (try parse(arena, testing.io, root, "spec_root = \"./specs/\"")).ok.spec_root);
+    try testing.expectEqualStrings(
+        "specs",
+        (try parse(arena, testing.io, root, "spec_root = \"./specs/\"")).ok.spec_root,
+    );
     try expectErr(try parse(arena, testing.io, root, ""), "'spec_root' is missing");
     try expectErr(try parse(arena, testing.io, root, "spec_root = 3"), "must be a string");
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"../elsewhere\""), "inside the project root");
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"/abs\""), "inside the project root");
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"../elsewhere\""),
+        "inside the project root",
+    );
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"/abs\""),
+        "inside the project root",
+    );
     try expectErr(try parse(arena, testing.io, root, "spec_root = \"missing\""), "does not exist");
     try expectErr(try parse(arena, testing.io, root, "spec_root = \"a-file\""), "not a directory");
 }
@@ -193,8 +247,14 @@ test "exclude and the claim keys are read, with defaults" {
     try testing.expectEqualStrings("trunk", set.claim_branch);
     try testing.expectEqualStrings("upstream", set.claim_remote);
     try testing.expectEqual(@as(?i64, 8), set.claim_max_hours);
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"specs\"\nexclude = [1]"), "patterns must be strings");
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_branch = 1"), "must be a string");
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"specs\"\nexclude = [1]"),
+        "patterns must be strings",
+    );
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_branch = 1"),
+        "must be a string",
+    );
 }
 
 // specrail: specs/config.spec.md § 2.6 Maximum claim duration
@@ -205,8 +265,14 @@ test "claim_max_hours must be a positive integer" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(arena, &tmp);
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_max_hours = 0"), "positive integer");
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_max_hours = \"8\""), "positive integer");
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_max_hours = 0"),
+        "positive integer",
+    );
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"specs\"\nclaim_max_hours = \"8\""),
+        "positive integer",
+    );
 }
 
 // specrail: specs/config.spec.md § 2.7 Unknown keys
@@ -217,5 +283,8 @@ test "unknown keys in specrail.toml are errors" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(arena, &tmp);
-    try expectErr(try parse(arena, testing.io, root, "spec_root = \"specs\"\nspecroot = \"specs\""), "unknown key 'specroot'");
+    try expectErr(
+        try parse(arena, testing.io, root, "spec_root = \"specs\"\nspecroot = \"specs\""),
+        "unknown key 'specroot'",
+    );
 }

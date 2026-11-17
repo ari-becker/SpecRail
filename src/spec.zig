@@ -76,8 +76,18 @@ pub const SpecFile = struct {
 
 /// Parses a spec file and reports into `out` every problem that can be found
 /// in that file alone.
-pub fn parse(arena: Allocator, path: []const u8, content: []const u8, out: *diag.List) Allocator.Error!SpecFile {
-    var p: Parser = .{ .arena = arena, .path = path, .out = out, .lines = try splitLines(arena, content) };
+pub fn parse(
+    arena: Allocator,
+    path: []const u8,
+    content: []const u8,
+    out: *diag.List,
+) Allocator.Error!SpecFile {
+    var p: Parser = .{
+        .arena = arena,
+        .path = path,
+        .out = out,
+        .lines = try splitLines(arena, content),
+    };
     return p.run();
 }
 
@@ -171,6 +181,24 @@ fn isSeparator(text: []const u8) bool {
     return std.mem.startsWith(u8, text, "---") and std.mem.trim(u8, text[3..], " \t").len == 0;
 }
 
+/// The separator: the first `---` line outside fenced code blocks that follows
+/// a blank line.
+fn findSeparator(lines: []const Line) ?usize {
+    for (lines, 0..) |l, i| {
+        if (i > 0 and l.kind == .text and isSeparator(l.text) and lines[i - 1].kind == .blank) {
+            return i;
+        }
+    }
+    return null;
+}
+
+fn hasSectionHeading(lines: []const Line) bool {
+    for (lines) |l| {
+        if (l.kind == .heading and refs.startsWithSign(l.heading)) return true;
+    }
+    return false;
+}
+
 fn isSetextUnderline(text: []const u8) bool {
     const i = leadingSpaces(text);
     if (i > 3) return false;
@@ -192,10 +220,12 @@ fn isThematicBreak(text: []const u8) bool {
 
 fn isListItem(text: []const u8) bool {
     const t = text[leadingSpaces(text)..];
-    if (t.len >= 2 and (t[0] == '-' or t[0] == '*' or t[0] == '+') and (t[1] == ' ' or t[1] == '\t')) return true;
+    if (t.len >= 2 and (t[0] == '-' or t[0] == '*' or t[0] == '+') and (t[1] == ' ' or
+        t[1] == '\t')) return true;
     var i: usize = 0;
     while (i < t.len and std.ascii.isDigit(t[i])) i += 1;
-    return i > 0 and i + 1 < t.len and (t[i] == '.' or t[i] == ')') and (t[i + 1] == ' ' or t[i + 1] == '\t');
+    return i > 0 and i + 1 < t.len and (t[i] == '.' or t[i] == ')') and (t[i + 1] == ' ' or
+        t[i + 1] == '\t');
 }
 
 /// Approximates CommonMark's "line of a paragraph", which a setext underline
@@ -213,7 +243,15 @@ fn isParagraphLine(line: Line) bool {
 
 /// The RFC 2119 requirement keywords specrail recognizes. Each negated form,
 /// such as `MUST NOT`, contains one of them.
-pub const keywords = [_][]const u8{ "MUST", "REQUIRED", "SHALL", "SHOULD", "RECOMMENDED", "MAY", "OPTIONAL" };
+pub const keywords = [_][]const u8{
+    "MUST",
+    "REQUIRED",
+    "SHALL",
+    "SHOULD",
+    "RECOMMENDED",
+    "MAY",
+    "OPTIONAL",
+};
 
 const Hit = struct {
     line: usize,
@@ -255,7 +293,12 @@ fn maskCodeSpans(buf: []u8) void {
     }
 }
 
-fn scanWords(arena: Allocator, text: []const u8, line: usize, hits: *std.ArrayList(Hit)) Allocator.Error!void {
+fn scanWords(
+    arena: Allocator,
+    text: []const u8,
+    line: usize,
+    hits: *std.ArrayList(Hit),
+) Allocator.Error!void {
     var i: usize = 0;
     while (i < text.len) {
         if (!std.ascii.isUpper(text[i]) or (i > 0 and isWordChar(text[i - 1]))) {
@@ -289,7 +332,13 @@ const Parser = struct {
     /// Own prose of each section, as a range of line indices.
     prose: std.ArrayList(Range) = .empty,
 
-    fn report(p: *Parser, severity: diag.Severity, at: diag.Position, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+    fn report(
+        p: *Parser,
+        severity: diag.Severity,
+        at: diag.Position,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) Allocator.Error!void {
         try p.out.append(p.arena, .{
             .path = p.path,
             .line = at.line,
@@ -300,7 +349,13 @@ const Parser = struct {
     }
 
     /// Reports an error at a 0-based line index.
-    fn err(p: *Parser, index: usize, column: u32, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+    fn err(
+        p: *Parser,
+        index: usize,
+        column: u32,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) Allocator.Error!void {
         try p.report(.err, .{ .line = @intCast(index + 1), .column = column }, fmt, args);
     }
 
@@ -334,71 +389,96 @@ const Parser = struct {
     }
 
     fn run(p: *Parser) Allocator.Error!SpecFile {
-        const lines = p.lines;
-        const n = lines.len;
-
-        var sep: ?usize = null;
-        for (lines, 0..) |l, i| {
-            if (i > 0 and l.kind == .text and isSeparator(l.text) and lines[i - 1].kind == .blank) {
-                sep = i;
-                break;
-            }
-        }
-        var has_sections = false;
-        for (lines) |l| {
-            if (l.kind == .heading and refs.startsWithSign(l.heading)) has_sections = true;
-        }
+        const n = p.lines.len;
+        const sep = findSeparator(p.lines);
         const ctx_end: usize, const sec_start: usize = if (sep) |s|
             .{ s, s + 1 }
-        else if (has_sections)
+        else if (hasSectionHeading(p.lines))
             .{ 0, 0 }
         else
             .{ n, n };
+        try p.checkLayout(sep);
+        try p.checkContext(ctx_end);
+        try p.readSections(sec_start);
+        try p.buildTree();
+        try p.checkProse();
+        return .{ .path = p.path, .sections = p.sections.items };
+    }
 
+    /// Reports a separator with nothing before it, and setext underlines anywhere.
+    fn checkLayout(p: *Parser, sep: ?usize) Allocator.Error!void {
+        const lines = p.lines;
         if (sep) |s| {
             const empty = for (lines[0..s]) |l| {
                 if (l.kind != .blank) break false;
             } else true;
             if (empty) try p.err(s, 1, "separator with no context before it; remove it", .{});
         }
-
         for (lines, 0..) |l, i| {
             if (i == 0 or l.kind != .text or (sep != null and sep.? == i)) continue;
             if (isSetextUnderline(l.text) and isParagraphLine(lines[i - 1])) {
-                try p.err(i, 1, "this underline makes the line above a heading that specrail does not recognize; use a '#' heading", .{});
+                try p.err(
+                    i,
+                    1,
+                    "this underline makes the line above a heading that specrail does not " ++
+                        "recognize; use a '#' heading",
+                    .{},
+                );
             }
         }
+    }
 
-        for (lines[0..ctx_end], 0..) |l, i| {
+    /// Reports section headings and requirement keywords in the context, which is
+    /// the lines before `ctx_end`.
+    fn checkContext(p: *Parser, ctx_end: usize) Allocator.Error!void {
+        for (p.lines[0..ctx_end], 0..) |l, i| {
             if (l.kind == .heading and refs.startsWithSign(l.heading)) {
-                try p.err(i, 1, "section heading in the context; move it below the '---' separator", .{});
+                try p.err(
+                    i,
+                    1,
+                    "section heading in the context; move it below the '---' separator",
+                    .{},
+                );
             }
         }
         for (try p.findKeywords(.{ .start = 0, .end = ctx_end })) |h| {
-            try p.err(h.line, h.column, "requirement keyword '{s}' in context; requirements belong in leaf sections", .{h.word});
+            try p.err(
+                h.line,
+                h.column,
+                "requirement keyword '{s}' in context; requirements belong in leaf sections",
+                .{h.word},
+            );
         }
+    }
 
-        try p.readSections(sec_start);
-        try p.buildTree();
-
-        const secs = p.sections.items;
-        for (secs, 0..) |*s, idx| {
-            const r = p.prose.items[idx];
-            const hits = try p.findKeywords(r);
+    /// Reports requirement keywords in the prose of parent sections, and leaves
+    /// whose prose states no requirement.
+    fn checkProse(p: *Parser) Allocator.Error!void {
+        for (p.sections.items, 0..) |*s, idx| {
+            const hits = try p.findKeywords(p.prose.items[idx]);
             if (!s.is_leaf) {
-                for (hits) |h| try p.err(h.line, h.column, "requirement keyword '{s}' in the prose of parent section § {s}; requirements belong in leaf sections", .{ h.word, s.number });
+                for (hits) |h| {
+                    try p.err(
+                        h.line,
+                        h.column,
+                        "requirement keyword '{s}' in the prose of parent section § {s}; " ++
+                            "requirements belong in leaf sections",
+                        .{ h.word, s.number },
+                    );
+                }
                 continue;
             }
             s.has_keyword = hits.len > 0;
             if (s.has_keyword) continue;
-            const msg = "leaf § {s} {s} states no requirement; state it with a requirement keyword (MUST, SHOULD, MAY, ...) or move the text into context";
-            if (s.effective == .done) {
-                try p.report(.err, .{ .line = s.line, .column = 1 }, msg, .{ s.number, s.title });
-            } else {
-                try p.report(.warning, .{ .line = s.line, .column = 1 }, msg, .{ s.number, s.title });
-            }
+            const severity: diag.Severity = if (s.effective == .done) .err else .warning;
+            try p.report(
+                severity,
+                .{ .line = s.line, .column = 1 },
+                "leaf § {s} {s} states no requirement; state it with a requirement keyword " ++
+                    "(MUST, SHOULD, MAY, ...) or move the text into context",
+                .{ s.number, s.title },
+            );
         }
-        return .{ .path = p.path, .sections = secs };
     }
 
     fn readSections(p: *Parser, start: usize) Allocator.Error!void {
@@ -413,7 +493,13 @@ const Parser = struct {
             if (l.kind != .heading) {
                 if (!seen_heading and l.kind != .blank and !preamble_reported) {
                     preamble_reported = true;
-                    try p.err(i, 1, "content before the first section heading; a '---' separator is missing or misplaced", .{});
+                    try p.err(
+                        i,
+                        1,
+                        "content before the first section heading; a '---' separator is missing " ++
+                            "or misplaced",
+                        .{},
+                    );
                 }
                 continue;
             }
@@ -423,18 +509,35 @@ const Parser = struct {
             const a = switch (refs.parseAddress(l.heading, .required)) {
                 .ok => |a| a,
                 .err => |msg| {
-                    try p.err(i, 1, "not a section heading: {s}; section headings look like '# § 1 Title'", .{msg});
+                    try p.err(
+                        i,
+                        1,
+                        "not a section heading: {s}; section headings look like '# § 1 Title'",
+                        .{msg},
+                    );
                     continue;
                 },
             };
-            try p.sections.append(p.arena, .{ .number = a.number, .title = a.title, .level = l.level, .line = @intCast(i + 1) });
+            try p.sections.append(
+                p.arena,
+                .{
+                    .number = a.number,
+                    .title = a.title,
+                    .level = l.level,
+                    .line = @intCast(i + 1),
+                },
+            );
             var prose_start = i + 1;
             var j = i + 1;
             while (j < n and lines[j].kind == .blank) j += 1;
-            if (j < n and lines[j].kind == .fence and lines[j].fence_open and std.mem.eql(u8, lines[j].fence_info, "toml")) {
+            const metadata_block = j < n and lines[j].kind == .fence and lines[j].fence_open and
+                std.mem.eql(u8, lines[j].fence_info, "toml");
+            if (metadata_block) {
                 var k = j + 1;
                 while (k < n and lines[k].kind == .in_fence) k += 1;
-                p.sections.items[p.sections.items.len - 1].metadata = try p.readMetadata(.{ .start = j, .end = k });
+                p.sections.items[p.sections.items.len - 1].metadata = try p.readMetadata(
+                    .{ .start = j, .end = k },
+                );
                 prose_start = @min(k + 1, n);
                 i = prose_start - 1;
             }
@@ -447,18 +550,10 @@ const Parser = struct {
         const secs = p.sections.items;
         var stack: [7]?usize = @splat(null);
         var counters: [7]u32 = @splat(0);
-        var prev_level: u8 = 0;
         var seen: std.StringHashMapUnmanaged(void) = .empty;
         defer seen.deinit(p.arena);
         for (secs, 0..) |*s, idx| {
-            const li = s.line - 1;
-            if (idx == 0 and s.level != 1) {
-                try p.err(li, 1, "the first section heading is level {d}; it must be level 1 ('#')", .{s.level});
-            }
-            if (idx > 0 and s.level > prev_level + 1) {
-                try p.err(li, 1, "heading jumps from level {d} to level {d}; levels go down one at a time", .{ prev_level, s.level });
-            }
-
+            try p.checkLevel(idx);
             var lvl: usize = s.level - 1;
             while (lvl > 0) : (lvl -= 1) {
                 if (stack[lvl]) |parent| {
@@ -469,32 +564,19 @@ const Parser = struct {
             }
             stack[s.level] = idx;
             for (s.level + 1..7) |d| stack[d] = null;
-
             counters[s.level] += 1;
             for (s.level + 1..7) |d| counters[d] = 0;
-            const gap = for (1..s.level) |d| {
-                if (counters[d] == 0) break true;
-            } else false;
-            if (!gap) {
-                var buf: std.ArrayList(u8) = .empty;
-                for (counters[1 .. s.level + 1], 0..) |c, k| {
-                    if (k > 0) try buf.append(p.arena, '.');
-                    try buf.print(p.arena, "{d}", .{c});
-                }
-                if (!std.mem.eql(u8, buf.items, s.number)) {
-                    try p.err(li, 1, "§ {s} is out of order; by its position it is § {s}", .{ s.number, buf.items });
-                }
-            }
-            if (refs.depth(s.number) != s.level) {
-                try p.err(li, 1, "heading level {d} does not match § {s}, which has {d} components", .{ s.level, s.number, refs.depth(s.number) });
-            }
-
+            try p.checkNumber(s.*, counters);
             const key = try p.arena.print("{s}\x00{s}", .{ s.number, s.title });
             const gop = try seen.getOrPut(p.arena, key);
             if (gop.found_existing) {
-                try p.err(li, 1, "duplicate section § {s} {s}; references cannot tell the two apart", .{ s.number, s.title });
+                try p.err(
+                    s.line - 1,
+                    1,
+                    "duplicate section § {s} {s}; references cannot tell the two apart",
+                    .{ s.number, s.title },
+                );
             }
-            prev_level = s.level;
         }
         for (secs) |*s| {
             const inherited: Status = if (s.parent) |parent| secs[parent].effective else .done;
@@ -502,81 +584,186 @@ const Parser = struct {
         }
     }
 
+    /// Reports a first section heading that is not level 1, and a heading more
+    /// than one level deeper than the one before it.
+    fn checkLevel(p: *Parser, idx: usize) Allocator.Error!void {
+        const s = p.sections.items[idx];
+        if (idx == 0 and s.level != 1) {
+            try p.err(
+                s.line - 1,
+                1,
+                "the first section heading is level {d}; it must be level 1 ('#')",
+                .{s.level},
+            );
+        }
+        if (idx == 0) return;
+        const prev = p.sections.items[idx - 1].level;
+        if (s.level > prev + 1) {
+            try p.err(
+                s.line - 1,
+                1,
+                "heading jumps from level {d} to level {d}; levels go down one at a time",
+                .{ prev, s.level },
+            );
+        }
+    }
+
+    /// Reports a section number that its position contradicts, given the counters
+    /// for each level so far, and a heading level that does not match its depth.
+    fn checkNumber(p: *Parser, s: Section, counters: [7]u32) Allocator.Error!void {
+        const gap = for (1..s.level) |d| {
+            if (counters[d] == 0) break true;
+        } else false;
+        if (!gap) {
+            var buf: std.ArrayList(u8) = .empty;
+            defer buf.deinit(p.arena);
+            for (counters[1 .. s.level + 1], 0..) |c, k| {
+                if (k > 0) try buf.append(p.arena, '.');
+                try buf.print(p.arena, "{d}", .{c});
+            }
+            if (!std.mem.eql(u8, buf.items, s.number)) {
+                try p.err(
+                    s.line - 1,
+                    1,
+                    "§ {s} is out of order; by its position it is § {s}",
+                    .{ s.number, buf.items },
+                );
+            }
+        }
+        if (refs.depth(s.number) != s.level) {
+            try p.err(
+                s.line - 1,
+                1,
+                "heading level {d} does not match § {s}, which has {d} components",
+                .{ s.level, s.number, refs.depth(s.number) },
+            );
+        }
+    }
+
     /// Reads the metadata block whose fences are the lines `fences.start` and
     /// `fences.end`.
     fn readMetadata(p: *Parser, fences: Range) Allocator.Error!Metadata {
-        const open = fences.start;
-        const close = fences.end;
-        var m: Metadata = .{ .line = @intCast(open + 1) };
+        var m: Metadata = .{ .line = @intCast(fences.start + 1) };
         // The parsed document borrows keys and strings from this text, and the
         // metadata borrows from the document, so it is freed only on error.
         var buf: std.ArrayList(u8) = .empty;
         errdefer buf.deinit(p.arena);
-        for (p.lines[open + 1 .. close], 0..) |l, k| {
+        for (p.lines[fences.start + 1 .. fences.end], 0..) |l, k| {
             if (k > 0) try buf.append(p.arena, '\n');
             try buf.appendSlice(p.arena, l.text);
         }
         // TOML line 1 is the line after the opening fence.
-        const base: u32 = @intCast(open + 1);
+        const base: u32 = @intCast(fences.start + 1);
         const doc = switch (try toml.parse(p.arena, buf.items)) {
             .ok => |doc| doc,
             .err => |e| {
-                try p.report(.err, .{ .line = base + e.line, .column = e.column }, "invalid metadata: {s}", .{e.message});
+                const at: diag.Position = .{ .line = base + e.line, .column = e.column };
+                try p.report(.err, at, "invalid metadata: {s}", .{e.message});
                 return m;
             },
         };
         for (doc.comment_lines) |cl| {
-            try p.report(.err, .{ .line = base + cl, .column = 1 }, "comments are not allowed in metadata blocks, because 'specrail fmt' reorders keys; use an x- key instead", .{});
+            try p.report(
+                .err,
+                .{ .line = base + cl, .column = 1 },
+                "comments are not allowed in metadata blocks, because 'specrail fmt' reorders " ++
+                    "keys; use an x- key instead",
+                .{},
+            );
         }
-        var until_line: u32 = 0;
         var deps: std.ArrayList(Dependency) = .empty;
         errdefer deps.deinit(p.arena);
-        for (doc.entries) |e| {
-            const line = base + e.line;
-            if (std.mem.eql(u8, e.key, "status")) {
-                if (e.value != .string) {
-                    try p.wrongType(line, e, "a string");
-                } else if (Status.parse(e.value.string)) |s| {
-                    m.status = s;
-                } else {
-                    try p.report(.err, .{ .line = line, .column = e.column }, "'{s}' is not a status; use planned, in-progress or done", .{e.value.string});
-                }
-            } else if (std.mem.eql(u8, e.key, "due")) {
-                if (e.value == .date) m.due = e.value.date else try p.wrongType(line, e, "a local date such as 2027-06-29");
-            } else if (std.mem.eql(u8, e.key, "assigned")) {
-                if (e.value == .string) m.assigned = e.value.string else try p.wrongType(line, e, "a string");
-            } else if (std.mem.eql(u8, e.key, "assigned-until")) {
-                until_line = line;
-                if (e.value == .datetime) m.assigned_until = e.value.datetime else try p.wrongType(line, e, "an offset date-time such as 2026-11-17T16:00:00Z");
-            } else if (std.mem.eql(u8, e.key, "dependencies")) {
-                if (e.value != .array) {
-                    try p.wrongType(line, e, "an array of strings");
-                    continue;
-                }
-                items: for (e.value.array) |item| {
-                    const item_line = base + item.line;
-                    if (item.value != .string) {
-                        try p.report(.err, .{ .line = item_line, .column = item.column }, "dependency entries must be strings, not {s}", .{item.value.kind()});
-                        continue :items;
-                    }
-                    switch (refs.parseForm(item.value.string, .required)) {
-                        .ok => |f| try deps.append(p.arena, .{ .form = f, .line = item_line, .column = item.column }),
-                        .err => |msg| try p.report(.err, .{ .line = item_line, .column = item.column }, "invalid dependency entry: {s}", .{msg}),
-                    }
-                }
-            } else if (!std.mem.startsWith(u8, e.key, "x-")) {
-                try p.report(.err, .{ .line = line, .column = e.column }, "unknown metadata key '{s}'; the keys are status, due, assigned, assigned-until and dependencies, and extension keys start with 'x-'", .{e.key});
-            }
-        }
+        for (doc.entries) |e| try p.readEntry(&m, &deps, base, e);
         if (m.assigned_until != null and m.assigned == null) {
-            try p.report(.err, .{ .line = until_line, .column = 1 }, "'assigned-until' needs an 'assigned' key naming who holds the claim", .{});
+            try p.report(
+                .err,
+                .{ .line = base + doc.get("assigned-until").?.line, .column = 1 },
+                "'assigned-until' needs an 'assigned' key naming who holds the claim",
+                .{},
+            );
         }
         m.dependencies = try deps.toOwnedSlice(p.arena);
         return m;
     }
 
+    /// Reads one metadata key into `m`, and dependency entries into `deps`.
+    /// `base` turns the document's line numbers into the file's.
+    fn readEntry(
+        p: *Parser,
+        m: *Metadata,
+        deps: *std.ArrayList(Dependency),
+        base: u32,
+        e: toml.Entry,
+    ) Allocator.Error!void {
+        const line = base + e.line;
+        if (std.mem.eql(u8, e.key, "status")) {
+            if (e.value != .string) return p.wrongType(line, e, "a string");
+            m.status = Status.parse(e.value.string) orelse return p.report(
+                .err,
+                .{ .line = line, .column = e.column },
+                "'{s}' is not a status; use planned, in-progress or done",
+                .{e.value.string},
+            );
+        } else if (std.mem.eql(u8, e.key, "due")) {
+            if (e.value != .date) return p.wrongType(line, e, "a local date such as 2027-06-29");
+            m.due = e.value.date;
+        } else if (std.mem.eql(u8, e.key, "assigned")) {
+            if (e.value != .string) return p.wrongType(line, e, "a string");
+            m.assigned = e.value.string;
+        } else if (std.mem.eql(u8, e.key, "assigned-until")) {
+            if (e.value != .datetime) {
+                return p.wrongType(line, e, "an offset date-time such as 2026-11-17T16:00:00Z");
+            }
+            m.assigned_until = e.value.datetime;
+        } else if (std.mem.eql(u8, e.key, "dependencies")) {
+            if (e.value != .array) return p.wrongType(line, e, "an array of strings");
+            try p.readDependencies(deps, base, e.value.array);
+        } else if (!std.mem.startsWith(u8, e.key, "x-")) {
+            try p.report(
+                .err,
+                .{ .line = line, .column = e.column },
+                "unknown metadata key '{s}'; the keys are status, due, assigned, " ++
+                    "assigned-until and dependencies, and extension keys start with 'x-'",
+                .{e.key},
+            );
+        }
+    }
+
+    /// Reads dependency entries, each a string in reference form.
+    fn readDependencies(
+        p: *Parser,
+        deps: *std.ArrayList(Dependency),
+        base: u32,
+        items: []const toml.Item,
+    ) Allocator.Error!void {
+        for (items) |item| {
+            const at: diag.Position = .{ .line = base + item.line, .column = item.column };
+            if (item.value != .string) {
+                try p.report(
+                    .err,
+                    at,
+                    "dependency entries must be strings, not {s}",
+                    .{item.value.kind()},
+                );
+                continue;
+            }
+            switch (refs.parseForm(item.value.string, .required)) {
+                .ok => |f| try deps.append(
+                    p.arena,
+                    .{ .form = f, .line = at.line, .column = at.column },
+                ),
+                .err => |msg| try p.report(.err, at, "invalid dependency entry: {s}", .{msg}),
+            }
+        }
+    }
+
     fn wrongType(p: *Parser, line: u32, e: toml.Entry, expected: []const u8) Allocator.Error!void {
-        try p.report(.err, .{ .line = line, .column = e.column }, "'{s}' must be {s}, not {s}", .{ e.key, expected, e.value.kind() });
+        try p.report(
+            .err,
+            .{ .line = line, .column = e.column },
+            "'{s}' must be {s}, not {s}",
+            .{ e.key, expected, e.value.kind() },
+        );
     }
 };
 
@@ -595,16 +782,26 @@ const Parsed = struct {
 
     fn expect(self: *const Parsed, line: u32, severity: diag.Severity, needle: []const u8) !void {
         for (self.diags.items) |d| {
-            if (d.line == line and d.severity == severity and std.mem.find(u8, d.message, needle) != null) return;
+            const found = std.mem.find(u8, d.message, needle) != null;
+            if (d.line == line and d.severity == severity and found) return;
         }
-        std.debug.print("no {s} containing '{s}' on line {d}; got:\n", .{ severity.name(), needle, line });
-        for (self.diags.items) |d| std.debug.print("  {d}:{d}: {s}: {s}\n", .{ d.line, d.column, d.severity.name(), d.message });
+        std.debug.print(
+            "no {s} containing '{s}' on line {d}; got:\n",
+            .{ severity.name(), needle, line },
+        );
+        for (self.diags.items) |d| std.debug.print(
+            "  {d}:{d}: {s}: {s}\n",
+            .{ d.line, d.column, d.severity.name(), d.message },
+        );
         return error.TestUnexpectedResult;
     }
 
     fn expectClean(self: *const Parsed) !void {
         if (self.diags.items.len == 0) return;
-        for (self.diags.items) |d| std.debug.print("  {d}:{d}: {s}: {s}\n", .{ d.line, d.column, d.severity.name(), d.message });
+        for (self.diags.items) |d| std.debug.print(
+            "  {d}:{d}: {s}: {s}\n",
+            .{ d.line, d.column, d.severity.name(), d.message },
+        );
         return error.TestUnexpectedResult;
     }
 
@@ -677,7 +874,10 @@ test "a separator with nothing before it is an error" {
 
 // specrail: specs/format/spec-files.spec.md § 2.6 Section headings in context
 test "a section heading on the context side of the separator is an error" {
-    var r = try parseTest("# § 1 Wrong side\n\n## % 2 Also wrong\n\n## 50% of users\n\n---\n\n# § 1 Right\n\nIt MUST work.\n");
+    var r = try parseTest(
+        "# § 1 Wrong side\n\n## % 2 Also wrong\n\n## 50% of users\n\n---\n\n# § 1 Right\n\nIt " ++
+            "MUST work.\n",
+    );
     defer r.deinit();
     try r.expect(1, .err, "section heading in the context");
     try r.expect(3, .err, "section heading in the context");
@@ -797,7 +997,9 @@ test "the tree follows heading levels" {
     try testing.expectEqual(@as(?usize, 0), s[2].parent);
     try testing.expect(!s[0].is_leaf and s[1].is_leaf and s[3].is_leaf);
 
-    var bad = try parseTest("## § 1 Starts deep\n\nIt MUST work.\n\n#### § 1.1.1 Skips\n\nIt MUST work.\n");
+    var bad = try parseTest(
+        "## § 1 Starts deep\n\nIt MUST work.\n\n#### § 1.1.1 Skips\n\nIt MUST work.\n",
+    );
     defer bad.deinit();
     try bad.expect(1, .err, "must be level 1");
     try bad.expect(5, .err, "jumps from level 2 to level 4");
@@ -936,7 +1138,9 @@ test "only a toml block first after the heading is metadata" {
 
 // specrail: specs/format/metadata.spec.md § 2.4 No comments in metadata blocks
 test "comments in metadata blocks are errors" {
-    var r = try parseTest("# § 1 One\n```toml\n# why\nstatus = \"planned\" # because\n```\nIt MUST work.\n");
+    var r = try parseTest(
+        "# § 1 One\n```toml\n# why\nstatus = \"planned\" # because\n```\nIt MUST work.\n",
+    );
     defer r.deinit();
     try r.expect(3, .err, "comments are not allowed");
     try r.expect(4, .err, "comments are not allowed");
@@ -977,7 +1181,10 @@ test "known keys must have the right types" {
 // specrail: specs/format/metadata.spec.md § 3.2 Extension keys
 // specrail: specs/format/metadata.spec.md § 3.3 Unknown keys
 test "x- keys are accepted and other unknown keys are errors" {
-    var r = try parseTest("# § 1 One\n```toml\nx-jira = \"ABC-1\"\nx-n = [1, 2]\nstauts = \"planned\"\n```\nIt MUST work.\n");
+    var r = try parseTest(
+        "# § 1 One\n```toml\nx-jira = \"ABC-1\"\nx-n = [1, 2]\nstauts = \"planned\"\n```\nIt " ++
+            "MUST work.\n",
+    );
     defer r.deinit();
     try r.expect(5, .err, "unknown metadata key 'stauts'");
     try testing.expectEqual(@as(usize, 1), r.count());
@@ -985,7 +1192,10 @@ test "x- keys are accepted and other unknown keys are errors" {
 
 // specrail: specs/format/metadata.spec.md § 4.1 Status values
 test "status must be planned, in-progress or done" {
-    var r = try parseTest("# § 1 One\n```toml\nstatus = \"wip\"\n```\nIt MUST work.\n# § 2 Two\n```toml\nstatus = \"in-progress\"\n```\nIt MUST work.\n");
+    var r = try parseTest(
+        "# § 1 One\n```toml\nstatus = \"wip\"\n```\nIt MUST work.\n# § 2 Two\n```toml\nstatus = " ++
+            "\"in-progress\"\n```\nIt MUST work.\n",
+    );
     defer r.deinit();
     try r.expect(3, .err, "'wip' is not a status");
     try testing.expectEqual(Status.in_progress, r.file.sections[1].effective);
@@ -1023,7 +1233,9 @@ test "status is inherited from the nearest ancestor that sets one" {
 
 // specrail: specs/format/metadata.spec.md § 5.1 Expiry needs an assignee
 test "assigned-until without assigned is an error" {
-    var r = try parseTest("# § 1 One\n```toml\nassigned-until = 2026-11-17T16:00:00Z\n```\nIt MUST work.\n");
+    var r = try parseTest(
+        "# § 1 One\n```toml\nassigned-until = 2026-11-17T16:00:00Z\n```\nIt MUST work.\n",
+    );
     defer r.deinit();
     try r.expect(3, .err, "needs an 'assigned' key");
 }
