@@ -328,6 +328,40 @@ pub fn plan(
     };
 }
 
+/// `content`, the text `file` was parsed from, as fmt would write it, but
+/// with every section keeping its number: an editor's document formatting
+/// changes one file, and renumbering changes the references in others too.
+/// Null when the file has errors that keep fmt from rewriting it.
+pub fn formatKeepingNumbers(
+    arena: Allocator,
+    file: *const spec.SpecFile,
+    content: []const u8,
+) Allocator.Error!?[]const u8 {
+    if (file.broken or file.duplicate) return null;
+    const numbers = try arena.alloc([]const u8, file.sections.len);
+    for (file.sections, numbers) |s, *n| n.* = s.number;
+    var renamer: Renamer = .{};
+    const kept: Plan = .{ .file = file, .numbers = numbers };
+    try renamer.plans.put(arena, file.path, kept);
+    const raw = try rewrite.splitLines(arena, content);
+    var formatter: Formatter = .{
+        .arena = arena,
+        .rewriter = renamer.rewriter(),
+        .plan = kept,
+        .newline = rewrite.fileEnding(raw),
+    };
+    return try formatter.format(raw);
+}
+
+/// Whether any section of `file` has a number other than the one its
+/// position gives it, which `specrail fmt` would change.
+pub fn outOfOrder(arena: Allocator, file: *const spec.SpecFile) Allocator.Error!bool {
+    for (file.sections, try positions(arena, file)) |s, n| {
+        if (!std.mem.eql(u8, s.number, n)) return true;
+    }
+    return false;
+}
+
 /// The 1-based line on which `after` first differs from `before`.
 fn firstDifference(before: []const u8, after: []const u8) u32 {
     const n = @min(before.len, after.len);

@@ -34,6 +34,8 @@ pub const Index = struct {
     /// The absolute path of the project root.
     root: []const u8,
     analysis: check.Analysis,
+    /// The project's spec files, with the open documents' text.
+    spec_files: []const project.SourceFile,
     /// The project's source files, with the open documents' text.
     source_files: []const project.SourceFile,
     /// Every file's text, by project path.

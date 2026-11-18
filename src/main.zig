@@ -84,6 +84,7 @@ test {
     _ = @import("init.zig");
     _ = @import("lsp.zig");
     _ = @import("lsp_complete.zig");
+    _ = @import("lsp_edit.zig");
     _ = @import("lsp_nav.zig");
     _ = @import("lsp_text.zig");
     _ = @import("mv.zig");

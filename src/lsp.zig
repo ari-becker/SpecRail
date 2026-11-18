@@ -12,6 +12,7 @@ const check = @import("check.zig");
 const cli = @import("cli.zig");
 const complete = @import("lsp_complete.zig");
 const diag = @import("diag.zig");
+const editing = @import("lsp_edit.zig");
 const files = @import("files.zig");
 const nav = @import("lsp_nav.zig");
 const project = @import("project.zig");
@@ -25,7 +26,8 @@ pub const usage =
     \\editor starts it once per workspace. It serves the project of the
     \\workspace's first folder, keeps its index in memory, and offers check's
     \\diagnostics, go to definition, find references, hover, and completion of
-    \\spec file paths and headings.
+    \\spec file paths and headings. Rename, formatting, the renumber action and
+    \\moving spec files in the editor rewrite references as fmt and mv would.
     \\
     \\Options:
     \\  --stdio   Accepted and ignored: stdin and stdout are the only transport
@@ -37,6 +39,7 @@ const parse_error = -32700;
 const invalid_request = -32600;
 const method_not_found = -32601;
 const server_not_initialized = -32002;
+const request_failed = -32803;
 
 /// Where the server is in the protocol's lifecycle.
 const State = enum { initialized, shut_down, uninitialized };
@@ -207,6 +210,11 @@ const Server = struct {
         }
         if (is(method, "textDocument/hover")) return s.hover(arena, id, params);
         if (is(method, "textDocument/completion")) return s.completion(arena, id, params);
+        if (is(method, "textDocument/prepareRename")) return s.prepareRename(arena, id, params);
+        if (is(method, "textDocument/rename")) return s.rename(arena, id, params);
+        if (is(method, "textDocument/formatting")) return s.formatting(arena, id, params);
+        if (is(method, "textDocument/codeAction")) return s.codeAction(arena, id, params);
+        if (is(method, "workspace/willRenameFiles")) return s.willRename(arena, id, params);
         return s.fail(arena, id, method_not_found, "specrail does not offer this");
     }
 
@@ -308,6 +316,13 @@ const Server = struct {
                 .referencesProvider = true,
                 .hoverProvider = true,
                 .completionProvider = .{ .triggerCharacters = .{ "§", "%" } },
+                .renameProvider = .{ .prepareProvider = true },
+                .documentFormattingProvider = true,
+                .codeActionProvider = true,
+                .workspace = .{ .fileOperations = .{ .willRename = .{ .filters = .{
+                    .{ .pattern = .{ .glob = "**/*.spec.md" } },
+                    .{ .pattern = .{ .glob = "**", .matches = "folder" } },
+                } } } },
             },
             .serverInfo = .{ .name = "specrail" },
         });
@@ -398,6 +413,7 @@ const Server = struct {
         s.index = .{
             .root = disk.root,
             .analysis = analysis,
+            .spec_files = spec_files.items,
             .source_files = source_files.items,
             .contents = contents,
             .encoding = s.encoding,
@@ -543,6 +559,107 @@ const Server = struct {
         const at = (try s.positionOf(arena, params)) orelse return s.respond(arena, id, none);
         const items = try complete.complete(&s.index.?, arena, at.path, at.index, at.byte);
         try s.respond(arena, id, items);
+    }
+
+    fn prepareRename(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        params: ?json.Value,
+    ) cli.Error!void {
+        const nothing = @as(?u8, null);
+        const at = (try s.positionOf(arena, params)) orelse return s.respond(arena, id, nothing);
+        const ix = &s.index.?;
+        const target = nav.targetAt(ix, at.path, at.index, at.byte) orelse
+            return s.respond(arena, id, nothing);
+        return s.respond(arena, id, editing.prepare(ix, target, at.path, at.index));
+    }
+
+    fn rename(s: *Server, arena: Allocator, id: json.Value, params: ?json.Value) cli.Error!void {
+        const target = (try s.targetAt(arena, params)) orelse {
+            return s.fail(arena, id, request_failed, "there is no section to rename here");
+        };
+        const new_name = string(field(params, "newName")) orelse "";
+        return s.answer(arena, id, try editing.rename(&s.index.?, arena, target, new_name));
+    }
+
+    /// Answers with a workspace edit, or with the reason there is none.
+    fn answer(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        outcome: editing.Outcome,
+    ) cli.Error!void {
+        switch (outcome) {
+            .edit => |e| return s.respond(arena, id, e),
+            .refused => |why| return s.fail(arena, id, request_failed, why),
+        }
+    }
+
+    /// The project path of the document a request names.
+    fn documentPath(
+        s: *const Server,
+        arena: Allocator,
+        params: ?json.Value,
+    ) Allocator.Error!?[]const u8 {
+        if (s.index == null) return null;
+        const uri = string(field(field(params, "textDocument"), "uri")) orelse return null;
+        return s.projectPath(arena, uri);
+    }
+
+    fn formatting(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        params: ?json.Value,
+    ) cli.Error!void {
+        const none = &[_]editing.TextEdit{};
+        const path = (try s.documentPath(arena, params)) orelse return s.respond(arena, id, none);
+        switch (try editing.format(&s.index.?, arena, path)) {
+            .edits => |edits| return s.respond(arena, id, edits),
+            .refused => |why| return s.fail(arena, id, request_failed, why),
+        }
+    }
+
+    fn codeAction(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        params: ?json.Value,
+    ) cli.Error!void {
+        const Action = struct { title: []const u8, kind: []const u8, edit: editing.WorkspaceEdit };
+        const none = &[_]Action{};
+        const path = (try s.documentPath(arena, params)) orelse return s.respond(arena, id, none);
+        const renumbered = (try editing.renumber(&s.index.?, arena, path)) orelse
+            return s.respond(arena, id, none);
+        const action: Action = .{
+            .title = "Renumber sections by position",
+            .kind = "quickfix",
+            .edit = renumbered,
+        };
+        return s.respond(arena, id, &[_]Action{action});
+    }
+
+    fn willRename(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        params: ?json.Value,
+    ) cli.Error!void {
+        if (s.index == null) return s.respond(arena, id, @as(?u8, null));
+        var moves: std.ArrayList(editing.Move) = .empty;
+        defer moves.deinit(arena);
+        const renamed = field(params, "files");
+        const count = if (renamed) |r| (if (r == .array) r.array.items.len else 0) else 0;
+        for (0..count) |i| {
+            const pair = element(renamed, i);
+            const old_uri = string(field(pair, "oldUri")) orelse continue;
+            const new_uri = string(field(pair, "newUri")) orelse continue;
+            const old = (try s.projectPath(arena, old_uri)) orelse continue;
+            const new = (try s.projectPath(arena, new_uri)) orelse continue;
+            try moves.append(arena, .{ .old = old, .new = new });
+        }
+        return s.answer(arena, id, try editing.moveFiles(&s.index.?, arena, moves.items));
     }
 
     fn hover(s: *Server, arena: Allocator, id: json.Value, params: ?json.Value) cli.Error!void {
@@ -1083,4 +1200,164 @@ test "completion offers spec file paths, then that file's headings, inserted wit
     try testing.expectEqual(@as(?i64, 29), sign_at);
     try testing.expectEqual(@as(usize, 0), r.result(5).?.array.items.len);
     try testing.expectEqualStrings(headings, try labels(arena, r.result(6)));
+}
+
+/// The edits a workspace edit makes to `uri`, as `line: new text` pieces.
+fn changesFor(arena: Allocator, workspace_edit: ?json.Value, uri: []const u8) ![]const u8 {
+    const list = field(field(workspace_edit, "changes"), uri) orelse return "";
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(arena);
+    for (list.array.items) |e| {
+        const line = integer(field(field(field(e, "range"), "start"), "line")).?;
+        try out.print(arena, "{d}: {s}", .{ line, string(field(e, "newText")).? });
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn renameAt(se: *Session, id: i64, path: []const u8, at: nav.Position, new_name: []const u8) !void {
+    try se.send(.{ .jsonrpc = "2.0", .id = id, .method = "textDocument/rename", .params = .{
+        .textDocument = .{ .uri = try se.uri(path) },
+        .position = at,
+        .newName = new_name,
+    } });
+}
+
+// specrail: specs/lsp.spec.md § 3.2 Rename
+test "rename from a heading, a reference or a dependency entry rewrites all that names it" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    try se.ask(2, "textDocument/prepareRename", "specs/a.spec.md", .{ .line = 9, .character = 12 });
+    try renameAt(&se, 3, "specs/a.spec.md", .{ .line = 9, .character = 12 }, "Google sign-in");
+    try renameAt(&se, 4, "src/t.zig", .{ .line = 1, .character = 5 }, "Google sign-in");
+    try renameAt(&se, 5, "specs/b.spec.md", .{ .line = 2, .character = 20 }, " Google sign-in ");
+    const stale = try std.mem.replaceOwned(u8, se.arena(), t_zig, "1.1 Password", "1.1 Pasword");
+    try opened(&se, "src/t.zig", stale);
+    try renameAt(&se, 6, "src/t.zig", .{ .line = 0, .character = 5 }, "Passphrase");
+    try se.finish();
+    const r = try se.run();
+    const arena = se.arena();
+    try testing.expectEqualStrings("Google", string(field(r.result(2), "placeholder")).?);
+    try testing.expectEqual(@as(?i64, 9), startLine(r.result(2)));
+    for ([_]i64{ 3, 4, 5 }) |id| {
+        const e = r.result(id);
+        const spec_a = try changesFor(arena, e, try se.uri("specs/a.spec.md"));
+        try testing.expectEqualStrings("9: ## § 1.2 Google sign-in\n", spec_a);
+        const t = try changesFor(arena, e, try se.uri("src/t.zig"));
+        try testing.expectEqualStrings("1: // specrail: specs/a.spec.md § 1.2 Google sign-in\n", t);
+        const spec_b = try changesFor(arena, e, try se.uri("specs/b.spec.md"));
+        const entry = "2: dependencies = [\"specs/a.spec.md § 1.2 Google sign-in\"]\n";
+        try testing.expectEqualStrings(entry, spec_b);
+    }
+    try testing.expectEqual(@as(?i64, request_failed), integer(field(r.result(6), "code")));
+}
+
+fn formatDocument(se: *Session, id: i64, path: []const u8) !void {
+    const method = "textDocument/formatting";
+    try se.send(.{ .jsonrpc = "2.0", .id = id, .method = method, .params = .{
+        .textDocument = .{ .uri = try se.uri(path) },
+        .options = .{ .tabSize = 4, .insertSpaces = true },
+    } });
+}
+
+// specrail: specs/lsp.spec.md § 3.3 Formatting
+test "formatting a spec file makes fmt's edits, except renumbering" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    const arena = se.arena();
+    const replace = std.mem.replaceOwned;
+    var untidy = try replace(u8, arena, a_spec, "## § 1.1 Password", "##  § 1.1   Password");
+    untidy = try replace(u8, arena, untidy, "x-owner = \"auth\"", "x-owner   =   \"auth\"");
+    untidy = try replace(u8, arena, untidy, "## § 1.2 Google", "## % 1.5 Google");
+    try opened(&se, "specs/a.spec.md", untidy);
+    try formatDocument(&se, 2, "specs/a.spec.md");
+    try opened(&se, "specs/b.spec.md", "## § 1 Deep\n\nIt MUST be deep.\n");
+    try formatDocument(&se, 3, "specs/b.spec.md");
+    try se.finish();
+    const r = try se.run();
+    var made: std.ArrayList(u8) = .empty;
+    for (r.result(2).?.array.items) |e| {
+        const line = integer(field(field(field(e, "range"), "start"), "line")).?;
+        try made.print(arena, "{d}: {s}", .{ line, string(field(e, "newText")).? });
+    }
+    const expected = "2: ## § 1.1 Password\n4: x-owner = \"auth\"\n9: ## § 1.5 Google\n";
+    try testing.expectEqualStrings(expected, made.items);
+    try testing.expectEqual(@as(?i64, request_failed), integer(field(r.result(3), "code")));
+}
+
+// specrail: specs/lsp.spec.md § 3.4 Renumber action
+test "a spec file numbered out of order offers to renumber it and what names it" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    const apple = "## § 1.2 Apple\n\nIt MUST accept Apple.\n\n## § 1.2 Google";
+    const inserted = try std.mem.replaceOwned(u8, se.arena(), a_spec, "## § 1.2 Google", apple);
+    try opened(&se, "specs/a.spec.md", inserted);
+    for ([_][]const u8{ "specs/a.spec.md", "specs/b.spec.md" }, 2..) |path, id| {
+        try se.send(.{ .jsonrpc = "2.0", .id = id, .method = "textDocument/codeAction", .params = .{
+            .textDocument = .{ .uri = try se.uri(path) },
+            .range = .{
+                .start = .{ .line = 0, .character = 0 },
+                .end = .{ .line = 0, .character = 0 },
+            },
+            .context = .{ .diagnostics = .{} },
+        } });
+    }
+    try se.finish();
+    const r = try se.run();
+    const arena = se.arena();
+    const action = element(r.result(2), 0);
+    const title = string(field(action, "title")).?;
+    try testing.expectEqualStrings("Renumber sections by position", title);
+    const e = field(action, "edit");
+    const spec_a = try changesFor(arena, e, try se.uri("specs/a.spec.md"));
+    try testing.expectEqualStrings("13: ## § 1.3 Google\n", spec_a);
+    const t = try changesFor(arena, e, try se.uri("src/t.zig"));
+    try testing.expectEqualStrings("1: // specrail: specs/a.spec.md § 1.3 Google\n", t);
+    const entry = "2: dependencies = [\"specs/a.spec.md § 1.3 Google\"]\n";
+    try testing.expectEqualStrings(entry, try changesFor(arena, e, try se.uri("specs/b.spec.md")));
+    try testing.expectEqual(@as(usize, 0), r.result(3).?.array.items.len);
+}
+
+// specrail: specs/lsp.spec.md § 3.5 File renames
+test "moving a spec file or a directory of specs rewrites the paths that name them" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    try s.write("specs/auth/c.spec.md", "# § 1 Sessions\n\nIt MUST keep sessions.\n");
+    try s.write("src/u.zig", "// specrail: specs/auth/c.spec.md § 1 Sessions\n");
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    const moves = .{
+        .{.{
+            .oldUri = try se.uri("specs/a.spec.md"),
+            .newUri = try se.uri("specs/login.spec.md"),
+        }},
+        .{.{ .oldUri = try se.uri("specs/auth"), .newUri = try se.uri("specs/identity") }},
+    };
+    inline for (moves, 2..) |files_moved, id| {
+        const method = "workspace/willRenameFiles";
+        try se.send(.{ .jsonrpc = "2.0", .id = id, .method = method, .params = .{
+            .files = files_moved,
+        } });
+    }
+    try se.finish();
+    const r = try se.run();
+    const arena = se.arena();
+    const t = try changesFor(arena, r.result(2), try se.uri("src/t.zig"));
+    const renamed_refs = "0: // specrail: specs/login.spec.md § 1.1 Password\n" ++
+        "1: // specrail: specs/login.spec.md § 1.2 Google\n";
+    try testing.expectEqualStrings(renamed_refs, t);
+    const entry = "2: dependencies = [\"specs/login.spec.md § 1.2 Google\"]\n";
+    const spec_b = try changesFor(arena, r.result(2), try se.uri("specs/b.spec.md"));
+    try testing.expectEqualStrings(entry, spec_b);
+    const u = try changesFor(arena, r.result(3), try se.uri("src/u.zig"));
+    try testing.expectEqualStrings("0: // specrail: specs/identity/c.spec.md § 1 Sessions\n", u);
 }

@@ -68,7 +68,6 @@ completion MUST offer spec file paths, and after a path and a section sign
 
 # § 3 Editing
 ```toml
-status       = "planned"
 dependencies = [
   "specs/cli/fmt.spec.md § 2 Renumbering",
   "specs/cli/mv.spec.md § 2 Sections",
@@ -79,9 +78,6 @@ Editing goes through the same code as `specrail fmt` and `specrail mv`, so the
 editor and the command line never disagree.
 
 ## § 3.1 Diagnostics
-```toml
-status = "done"
-```
 
 The server MUST publish for each open document the diagnostics that check
 would report in that document, and MUST publish them again for every open
