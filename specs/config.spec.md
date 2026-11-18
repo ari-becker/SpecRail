@@ -20,9 +20,10 @@ its parents.
 
 ## § 1.2 No project root
 
-When no such directory exists, every command except `init`, `skill`,
+When no such directory exists, every command except `init`, `skill`, `lsp`,
 `hook pre-receive` and `--help` MUST exit with status 2 and print to stderr an
-error suggesting `specrail init`.
+error suggesting `specrail init`. The language server finds the project root
+from the workspace instead.
 
 # § 2 Keys
 

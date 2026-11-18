@@ -9,6 +9,7 @@ const context = @import("context.zig");
 const fmt_command = @import("fmt.zig");
 const hook_command = @import("hook.zig");
 const init_command = @import("init.zig");
+const lsp = @import("lsp.zig");
 const mv_command = @import("mv.zig");
 const skill = @import("skill.zig");
 const swap_command = @import("swap.zig");
@@ -38,6 +39,9 @@ pub const Ctx = struct {
     stdin: ?*Io.Reader = null,
     /// The value of SPECRAIL_ASSIGNEE, if set and not empty.
     assignee: ?[]const u8 = null,
+    /// Memory that is given back, for the language server, which runs for as
+    /// long as the editor does.
+    gpa: Allocator = std.heap.smp_allocator,
     /// Where the search for the project root stops; tests use it to stay
     /// inside their sandbox.
     root_ceiling: ?[]const u8 = null,
@@ -71,6 +75,7 @@ pub const commands = [_]Command{
     .{ .name = "claim", .summary = "Take a section for a limited time" },
     .{ .name = "release", .summary = "Give up a claim early" },
     .{ .name = "hook", .summary = "Check pushes to the claim branch, from git hook scripts" },
+    .{ .name = "lsp", .summary = "Run the language server on stdin and stdout" },
     .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
@@ -158,6 +163,7 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "claim")) return runClaim(ctx, .claim, rest);
     if (std.mem.eql(u8, cmd, "release")) return runClaim(ctx, .release, rest);
     if (std.mem.eql(u8, cmd, "hook")) return runHook(ctx, rest);
+    if (std.mem.eql(u8, cmd, "lsp")) return runLsp(ctx, rest);
     if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
     if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
@@ -231,6 +237,20 @@ fn runClaim(ctx: *Ctx, command: claim_command.Command, args: []const []const u8)
         }
     }
     return claim_command.run(ctx, command, args);
+}
+
+fn runLsp(ctx: *Ctx, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(lsp.usage);
+            return 0;
+        }
+        // Editors that start servers over stdio often say so.
+        if (!std.mem.eql(u8, a, "--stdio")) {
+            return usageError(ctx, "lsp", "unknown argument '{s}'", .{a});
+        }
+    }
+    return lsp.run(ctx);
 }
 
 fn runHook(ctx: *Ctx, args: []const []const u8) !u8 {

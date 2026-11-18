@@ -82,6 +82,9 @@ test {
     _ = @import("git.zig");
     _ = @import("hook.zig");
     _ = @import("init.zig");
+    _ = @import("lsp.zig");
+    _ = @import("lsp_nav.zig");
+    _ = @import("lsp_text.zig");
     _ = @import("mv.zig");
     _ = @import("project.zig");
     _ = @import("refs.zig");

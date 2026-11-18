@@ -6,9 +6,6 @@ repository.
 ---
 
 # § 1 Lifecycle
-```toml
-status = "planned"
-```
 
 ## § 1.1 Transport
 
@@ -28,22 +25,49 @@ changed or deleted.
 before the exit notification, and with status 1 otherwise, as the Language
 Server Protocol requires.
 
+## § 1.4 Position encoding
+
+The server MUST use UTF-8 positions when the client lists `utf-8` among the
+position encodings it supports, and otherwise MUST count columns in UTF-16
+code units, as the Language Server Protocol requires. In UTF-8, `§` takes two
+bytes; in UTF-16, one code unit.
+
+## § 1.5 Without a project
+
+When the workspace has no project root, the server MUST keep running, answer
+every request with an empty result, and show the user one message saying
+why, so that the editor does not restart it in a loop.
+
+## § 1.6 Workspace folders
+
+The server MUST serve the project of the client's first workspace folder, or
+of its root when the client sends no workspace folders.
+
 # § 2 Navigation
 ```toml
 status = "planned"
 ```
 
 ## § 2.1 Reference to section
+```toml
+status = "done"
+```
 
 Go to definition on a reference line or a dependency entry MUST return the
 heading of the section it names.
 
 ## § 2.2 Section to references
+```toml
+status = "done"
+```
 
 Find references on a section heading MUST return every reference and
 dependency entry naming that section or a section in its subtree.
 
 ## § 2.3 Hover
+```toml
+status = "done"
+```
 
 Hovering over a reference line or dependency entry MUST show the named
 section's heading, metadata block and own prose.
@@ -67,15 +91,20 @@ Editing goes through the same code as `specrail fmt` and `specrail mv`, so the
 editor and the command line never disagree.
 
 ## § 3.1 Diagnostics
+```toml
+status = "done"
+```
 
 The server MUST publish for each open document the diagnostics that check
-would report in that document.
+would report in that document, and MUST publish them again for every open
+document whenever a change to any file may have changed them.
 
 ## § 3.2 Rename
 
-Rename on a section heading MUST change the section's title and return a
-workspace edit that also rewrites every reference and dependency entry naming
-it, as `specrail mv` would.
+Rename on a section heading, on a reference line or on a dependency entry
+MUST change the title of the section it names and return a workspace edit
+that also rewrites every reference and dependency entry naming that section,
+as `specrail mv` would.
 
 ## § 3.3 Formatting
 
@@ -88,3 +117,10 @@ When a spec file's numbering is out of order, the server MUST offer a code
 action that renumbers the file and returns a workspace edit that also
 rewrites the affected references and dependency entries, as `specrail fmt`
 would.
+
+## § 3.5 File renames
+
+When the client is about to rename or move a spec file, or a directory that
+holds spec files, the server MUST return a workspace edit that rewrites the
+path in every reference and dependency entry naming a moved spec file, as
+`specrail mv` would.

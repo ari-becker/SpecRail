@@ -143,6 +143,7 @@ pub const Sandbox = struct {
             .root_ceiling = s.root,
             .stdin = &in,
             .assignee = options.assignee,
+            .gpa = testing.allocator,
         };
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(arena);
