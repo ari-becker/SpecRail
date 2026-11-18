@@ -210,9 +210,10 @@ saved in `.zig-cache/f/crash`, and
 that file instead.
 
 On every push, CI runs the tests on Linux and macOS, lint, and the language
-server tests. The Fuzz workflow searches for an hour every night, starting
-where the night before stopped, and for a quarter of an hour on every pull
-request; it keeps any input that fails as an artifact to replay.
+server tests. The Fuzz workflow searches for 5 hours 50 minutes every night,
+just inside the 6 hours GitHub allows a job, starting where the night before
+stopped, and for a quarter of an hour on every pull request; it keeps any
+input that fails as an artifact to replay.
 
 ## License
 

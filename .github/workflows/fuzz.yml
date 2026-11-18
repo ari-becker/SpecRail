@@ -1,8 +1,8 @@
 name: Fuzz
 
-# The fuzz tests search for an hour every night, and for a quarter of an hour
-# on every pull request. CI's zig build test runs each of them on fixed seeds
-# on every push; this searches much further.
+# The fuzz tests search for 5 hours 50 minutes every night, and for a quarter
+# of an hour on every pull request. CI's zig build test runs each of them on
+# fixed seeds on every push; this searches much further.
 on:
   schedule:
     # 03:17 UTC, off the hour, when scheduled runs are fewer.
@@ -13,7 +13,7 @@ on:
       minutes:
         description: Minutes to fuzz for
         required: true
-        default: "55"
+        default: "350"
 
 permissions:
   contents: read
@@ -28,8 +28,10 @@ jobs:
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
-    # The rounds stop by themselves before the deadline; this is the backstop.
-    timeout-minutes: 80
+    # GitHub stops a job on its own runners after 6 hours. The rounds stop by
+    # themselves before 350 minutes, which leaves the setup, the cache save
+    # and the upload of a failing input the rest; this is the backstop.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,7 +43,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: Fuzz
         env:
-          MINUTES: ${{ inputs.minutes || (github.event_name == 'pull_request' && '15') || '55' }}
+          MINUTES: ${{ inputs.minutes || (github.event_name == 'pull_request' && '15') || '350' }}
         run: tools/fuzz-for.sh "$MINUTES" 100K
       # Replay it with: zig build test -Dfuzz-input=<path to crash>
       - name: Keep the input that failed
