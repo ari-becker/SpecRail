@@ -160,3 +160,10 @@ would move, mv MUST change nothing and exit with status 2.
 mv MUST write the new content of every file it changes before it moves or
 replaces any file. When it cannot write one, it MUST change nothing and exit
 with status 2.
+
+## § 4.4 Sections kept
+
+mv MUST change nothing and exit with status 2 when a spec file it writes
+would not read back with exactly the sections it planned, as when a `---` line
+that was prose after one file's separator would become the separator of a
+file without one.

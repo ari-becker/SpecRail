@@ -68,3 +68,10 @@ status 2.
 swap MUST print to stdout the new address of each section in reference form,
 the first argument's first, one per line, then the path of each file it
 modified, one per line, and MUST print its errors to stderr.
+
+## § 2.6 Sections kept
+
+swap MUST change nothing and exit with status 2 when a spec file it writes
+would not read back with exactly the sections it planned, as when a `---` line
+that was prose after one file's separator would become the separator of a
+file without one.

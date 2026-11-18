@@ -341,7 +341,6 @@ test "a diff replaces changed lines, or the stretch between shared ends" {
 
 const testing = std.testing;
 
-const check = @import("check.zig");
 const diag = @import("diag.zig");
 const fuzzing = @import("fuzzing.zig");
 const mv = @import("mv.zig");
@@ -352,23 +351,7 @@ const fuzzed = edit.fuzzed;
 
 /// The server's index of a project held in memory.
 fn indexOf(arena: Allocator, proj: project.Project, encoding: text.Encoding) !nav.Index {
-    var contents: std.StringHashMapUnmanaged([]const u8) = .empty;
-    errdefer contents.deinit(arena);
-    for ([_][]const project.SourceFile{ proj.spec_files, proj.source_files }) |list| {
-        for (list) |f| try contents.put(arena, f.path, f.content);
-    }
-    const input: check.Input = .{
-        .spec_files = proj.spec_files,
-        .source_files = proj.source_files,
-    };
-    return .{
-        .root = proj.root,
-        .analysis = try check.analyze(arena, input, 20774 * 86400),
-        .spec_files = proj.spec_files,
-        .source_files = proj.source_files,
-        .contents = contents,
-        .encoding = encoding,
-    };
+    return nav.Index.build(arena, proj, encoding, 20774 * 86400);
 }
 
 /// The byte offset in `content` of the LSP position `at`.

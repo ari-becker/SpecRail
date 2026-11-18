@@ -216,3 +216,236 @@ test "a dependency entry is found by the lines above it, even unparsed" {
     try std.testing.expectEqual(@as(?usize, 3), entryStart("  \"spe"));
     try std.testing.expectEqual(@as(?usize, null), entryStart("  \"specs/a.spec.md § 1 One\","));
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const testing = std.testing;
+
+const edit = @import("edit.zig");
+const fuzzing = @import("fuzzing.zig");
+const project = @import("project.zig");
+const spec = @import("spec.zig");
+
+const fuzzed = edit.fuzzed;
+
+/// The comment markers a made-up reference line starts with; the last is
+/// not one, so its line is no reference line.
+const line_starts = [_][]const u8{ "// ", "# ", "-- ", "<!-- ", "/* ", "  ", "x = \"" };
+
+/// A reference form cut short: part of a spec file's path, or its whole
+/// path and a section sign, then maybe part of one of its headings, or the
+/// path of no spec file.
+fn partialForm(smith: *testing.Smith, arena: Allocator, ix: *const nav.Index) ![]const u8 {
+    const file = &ix.analysis.specs[smith.index(ix.analysis.specs.len)];
+    const path = if (smith.boolWeighted(7, 1)) "specs/none.spec.md" else file.path;
+    // A seed read back says no to every choice, so this one also turns on the
+    // made-up file, for seeds to try both sides.
+    const cut_path = smith.value(bool) != (file.sections.len % 2 == 0);
+    if (cut_path) return path[0..smith.index(path.len + 1)];
+    const sign = if (smith.value(bool)) "%" else refs.section_sign;
+    var heading: []const u8 = "";
+    if (file.sections.len > 0) {
+        const s = file.sections[smith.index(file.sections.len)];
+        heading = try arena.print("{s} {s}", .{ s.number, s.title });
+    }
+    const spaces = if (smith.value(bool)) " " else "  ";
+    // An editor's text is UTF-8, so the cut falls between characters.
+    var cut = smith.index(heading.len + 1);
+    while (cut < heading.len and heading[cut] & 0xc0 == 0x80) cut -= 1;
+    const typed = heading[0..cut];
+    return arena.print("{s}{s}{s} {s}", .{ path, spaces, sign, typed });
+}
+
+/// What completion should offer for `typed`, the reference form so far.
+const Expected = union(enum) {
+    headings: *const spec.SpecFile,
+    nothing,
+    paths,
+};
+
+fn expected(ix: *const nav.Index, typed: []const u8) Expected {
+    const at = std.mem.find(u8, typed, refs.section_sign) orelse
+        std.mem.findScalar(u8, typed, '%') orelse return .paths;
+    const file = ix.analysis.file(std.mem.trim(u8, typed[0..at], " \t")) orelse return .nothing;
+    return .{ .headings = file };
+}
+
+/// `line` with `item` made, as an editor makes it.
+fn applied(arena: Allocator, line: []const u8, item: Item, encoding: text.Encoding) ![]const u8 {
+    const start = text.byteOffset(line, item.range.start.character, encoding);
+    const end = text.byteOffset(line, item.range.end.character, encoding);
+    return std.mem.concat(arena, u8, &.{ line[0..start], item.insert, line[end..] });
+}
+
+/// Whether `form` names a section of `file` exactly.
+fn namesExactly(file: *const spec.SpecFile, form: refs.Form) bool {
+    if (!std.mem.eql(u8, form.path, file.path)) return false;
+    for (file.sections) |s| {
+        if (std.mem.eql(u8, s.number, form.number) and std.mem.eql(u8, s.title, form.title)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Where the made-up completion is asked for: the file, its line, the text
+/// of the line, and the bytes of it before the cursor.
+const Ask = struct {
+    path: []const u8,
+    index: u32,
+    line: []const u8,
+    cursor: usize,
+    /// The form completed lies between this byte and the cursor.
+    form_start: usize,
+};
+
+/// A project with one more file, which holds a reference form cut short:
+/// on a reference line, or in a dependency entry of a spec file.
+fn askingProject(
+    smith: *testing.Smith,
+    arena: Allocator,
+    before: project.Project,
+    partial: []const u8,
+) !struct { project.Project, Ask } {
+    var proj = before;
+    // A seed read back says no to every choice, so this one also turns on the
+    // made-up project, for seeds to try both kinds of line.
+    const on_reference_line = smith.value(bool) != (before.source_files[0].content.len % 2 == 0);
+    if (on_reference_line) {
+        const start = fuzzing.pick(smith, &line_starts);
+        const line = try arena.print("{s}specrail: {s}", .{ start, partial });
+        const sources = try std.mem.concat(arena, project.SourceFile, &.{
+            before.source_files,
+            &.{.{ .path = "src/asked.zig", .content = line }},
+        });
+        proj.source_files = sources;
+        const form_start = start.len + "specrail: ".len;
+        const ask: Ask = .{
+            .path = "src/asked.zig",
+            .index = 0,
+            .line = line,
+            .cursor = line.len,
+            .form_start = form_start,
+        };
+        return .{ proj, ask };
+    }
+    const entry = "dependencies = [\"";
+    const line = try arena.print("{s}{s}\"]", .{ entry, partial });
+    const content = try arena.print("# § 1 Waits\n```toml\n{s}\n```\n\nIt MUST wait.\n", .{line});
+    const specs = try std.mem.concat(arena, project.SourceFile, &.{
+        before.spec_files,
+        &.{.{ .path = "specs/asked.spec.md", .content = content }},
+    });
+    proj.spec_files = specs;
+    const cursor = entry.len + partial.len;
+    const ask: Ask = .{
+        .path = "specs/asked.spec.md",
+        .index = 2,
+        .line = line,
+        .cursor = cursor,
+        .form_start = entry.len,
+    };
+    return .{ proj, ask };
+}
+
+/// The reference form on `line`, a reference line or a dependency entry,
+/// once completed.
+fn formOn(line: []const u8, ask: Ask) ?refs.Form {
+    if (std.mem.endsWith(u8, ask.path, ".spec.md")) {
+        const close = std.mem.findScalarPos(u8, line, ask.form_start, '"') orelse return null;
+        return switch (refs.parseForm(line[ask.form_start..close], .required)) {
+            .ok => |f| f,
+            .err => null,
+        };
+    }
+    const found = refs.scanLine(line) orelse return null;
+    return switch (found.result) {
+        .ok => |f| f,
+        .err => null,
+    };
+}
+
+/// Completing a reference form cut short offers every spec file path before
+/// a section sign, and after one every heading of the file named, each of
+/// which, once made, names its section exactly; anywhere else, nothing.
+fn completeAForm(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const before = try fuzzed.madeUp(smith, arena);
+    const encoding: text.Encoding = if (smith.value(bool)) .utf16 else .utf8;
+    const partial = try partialForm(smith, arena, &try nav.Index.build(arena, before, encoding, 0));
+    const proj, const ask = try askingProject(smith, arena, before, partial);
+    const ix = try nav.Index.build(arena, proj, encoding, 0);
+    const items = try complete(&ix, arena, ask.path, ask.index, ask.cursor);
+    const shown = .{ ask.line, ask.cursor, items.len };
+    errdefer std.debug.print("completing '{s}' at byte {d}: {d} items\n", shown);
+    const reference_line = std.mem.endsWith(u8, ask.path, ".spec.md") or
+        !std.mem.startsWith(u8, ask.line, "x = ");
+    const want: Expected = if (reference_line) expected(&ix, partial) else .nothing;
+    switch (want) {
+        .nothing => try testing.expectEqual(@as(usize, 0), items.len),
+        .paths => try testing.expectEqual(ix.analysis.specs.len, items.len),
+        .headings => |file| try testing.expectEqual(file.sections.len, items.len),
+    }
+    const cursor_column = text.column(ask.line, ask.cursor, encoding);
+    for (items) |item| {
+        try testing.expectEqual(ask.index, item.range.start.line);
+        try testing.expectEqual(ask.index, item.range.end.line);
+        try testing.expectEqual(cursor_column, item.range.end.character);
+        const made = try applied(arena, ask.line, item, encoding);
+        switch (want) {
+            .nothing => unreachable,
+            .paths => {
+                try testing.expect(ix.analysis.file(item.insert) != null);
+                const at = text.byteOffset(ask.line, item.range.start.character, encoding);
+                try testing.expectEqual(ask.form_start, at);
+            },
+            .headings => |file| {
+                const form = formOn(made, ask) orelse return error.TestUnexpectedResult;
+                try testing.expect(namesExactly(file, form));
+            },
+        }
+    }
+}
+
+// specrail: specs/lsp.spec.md § 1.4 Position encoding
+// specrail: specs/lsp.spec.md § 2.4 Completion
+test "fuzz: completing a reference or dependency names a section exactly" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, completeAForm, .{ .corpus = corpus });
+}
+
+/// Completion anywhere in any file offers only edits that replace text on
+/// the cursor's line, up to the cursor.
+fn completeAnywhere(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const proj = try fuzzed.madeUp(smith, arena);
+    const encoding: text.Encoding = if (smith.value(bool)) .utf16 else .utf8;
+    const ix = try nav.Index.build(arena, proj, encoding, 0);
+    const paths = fuzzing.spec_paths ++ [_][]const u8{ "src/t.zig", "src/none.zig" };
+    const path = fuzzing.pick(smith, &paths);
+    const index = smith.valueRangeAtMost(u32, 0, 40);
+    const byte: usize = smith.valueRangeAtMost(u8, 0, 120);
+    const items = try complete(&ix, arena, path, index, byte);
+    const line = text.lineAt(ix.contents.get(path) orelse "", index);
+    const cursor_column = text.column(line, @min(byte, line.len), encoding);
+    for (items) |item| {
+        try testing.expectEqual(index, item.range.start.line);
+        try testing.expectEqual(index, item.range.end.line);
+        try testing.expect(item.range.start.character <= item.range.end.character);
+        try testing.expectEqual(cursor_column, item.range.end.character);
+    }
+}
+
+// specrail: specs/lsp.spec.md § 2.4 Completion
+test "fuzz: completion anywhere edits only up to the cursor" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, completeAnywhere, .{ .corpus = corpus });
+}

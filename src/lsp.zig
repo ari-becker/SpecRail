@@ -8,7 +8,6 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const json = std.json;
 
-const check = @import("check.zig");
 const cli = @import("cli.zig");
 const complete = @import("lsp_complete.zig");
 const diag = @import("diag.zig");
@@ -398,26 +397,16 @@ const Server = struct {
             const list = if (is_spec) &spec_files else &source_files;
             try list.append(arena, .{ .path = path, .content = d.text });
         }
-        var contents: std.StringHashMapUnmanaged([]const u8) = .empty;
-        errdefer contents.deinit(arena);
-        for ([_][]const project.SourceFile{ spec_files.items, source_files.items }) |list| {
-            for (list) |f| try contents.put(arena, f.path, f.content);
-        }
-        const input: check.Input = .{
+        const overlaid: project.Project = .{
+            .root = disk.root,
+            .config = disk.config,
             .spec_files = spec_files.items,
             .source_files = source_files.items,
         };
-        const analysis = try check.analyze(arena, input, s.ctx.now);
+        const index = try nav.Index.build(arena, overlaid, s.encoding, s.ctx.now);
         s.index_arena.deinit();
         s.index_arena = next;
-        s.index = .{
-            .root = disk.root,
-            .analysis = analysis,
-            .spec_files = spec_files.items,
-            .source_files = source_files.items,
-            .contents = contents,
-            .encoding = s.encoding,
-        };
+        s.index = index;
     }
 
     fn overlay(

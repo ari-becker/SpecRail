@@ -538,6 +538,7 @@ pub const Editor = struct {
         for (outlines) |o| {
             try o.renumber(arena, &renames, numbers);
             const content = try o.render(arena);
+            try e.expectReadsBack(o, content);
             try edited.append(arena, .{ .origin = o.path, .path = o.path, .content = content });
         }
         for (moved) |name| {
@@ -548,6 +549,39 @@ pub const Editor = struct {
         }
         const list: Renames = .{ .items = renames.items };
         try e.rewriteAll(list.rewriter(), edited.items);
+    }
+
+    /// Whether `file` has exactly the sections of `o`, by level, number and
+    /// title, in order.
+    fn readsAs(file: *const spec.SpecFile, o: *const Outline) bool {
+        if (file.sections.len != o.entries.items.len) return false;
+        for (file.sections, o.entries.items, o.numbers) |s, x, n| {
+            if (s.level != x.level or !std.mem.eql(u8, s.number, n)) return false;
+            if (!std.mem.eql(u8, s.title, x.title)) return false;
+        }
+        return true;
+    }
+
+    /// Stops the command, with status 2, unless `content`, the new text of the
+    /// outline `o`, reads back with exactly the sections `o` holds. Lines
+    /// moved from one file to another can read differently there: a `---`
+    /// that was prose after one file's separator becomes the separator of a
+    /// file without one, and the sections above it its context.
+    fn expectReadsBack(e: *Editor, o: *const Outline, content: []const u8) Error!void {
+        const arena = e.ctx.arena;
+        var found: diag.List = .empty;
+        defer found.deinit(arena);
+        const file = try spec.parse(arena, o.path, content, &found);
+        if (readsAs(&file, o)) return;
+        const separator_moved = o.entries.items.len > 0 and file.separator != null and
+            (file.sections.len == 0 or file.separator.? > file.sections[0].line - 1);
+        if (separator_moved) {
+            const msg = "a --- line moved into {s} would become its separator, and the sections " ++
+                "above it context; nothing was changed";
+            return e.stop(2, msg, .{o.path});
+        }
+        const msg = "{s} would not read back with the sections planned; nothing was changed";
+        return e.stop(2, msg, .{o.path});
     }
 
     /// Rewrites, with `rw`, the dependency entries of every spec file and the

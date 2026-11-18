@@ -42,6 +42,34 @@ pub const Index = struct {
     contents: std.StringHashMapUnmanaged([]const u8),
     encoding: text.Encoding,
 
+    /// The index of `proj`, whose files hold the text to index: the open
+    /// documents' text in place of what is on disk. `now` is for check's
+    /// claims and due dates.
+    pub fn build(
+        arena: Allocator,
+        proj: project.Project,
+        encoding: text.Encoding,
+        now: i64,
+    ) Allocator.Error!Index {
+        var contents: std.StringHashMapUnmanaged([]const u8) = .empty;
+        errdefer contents.deinit(arena);
+        for ([_][]const project.SourceFile{ proj.spec_files, proj.source_files }) |list| {
+            for (list) |f| try contents.put(arena, f.path, f.content);
+        }
+        const input: check.Input = .{
+            .spec_files = proj.spec_files,
+            .source_files = proj.source_files,
+        };
+        return .{
+            .root = proj.root,
+            .analysis = try check.analyze(arena, input, now),
+            .spec_files = proj.spec_files,
+            .source_files = proj.source_files,
+            .contents = contents,
+            .encoding = encoding,
+        };
+    }
+
     /// The URI of the file at project path `path`.
     pub fn uri(ix: *const Index, arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
         return text.pathToUri(arena, try std.Io.Dir.path.join(arena, &.{ ix.root, path }));

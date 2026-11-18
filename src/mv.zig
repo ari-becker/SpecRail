@@ -839,6 +839,22 @@ test "--before and --after put a section next to another, at its level" {
     try expectChecks(&s);
 }
 
+// specrail: specs/cli/mv.spec.md § 4.4 Sections kept
+test "a --- moved into a file without a separator stops mv" {
+    // Found by fuzzing: the --- became the new file's separator, and the
+    // section moved there its context.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const ruled = "Context.\n\n---\n\n# § 1 One\n\nIt MUST work.\n\n---\n\nMore.\n";
+    try s.write("specs/ruled.spec.md", ruled);
+    const o = try runMv(&s, &.{ "specs/ruled.spec.md § 1 One", "specs/new.spec.md § 1 One" });
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "would become its separator");
+    try testing.expectEqualStrings(ruled, try s.read("specs/ruled.spec.md"));
+    try testing.expect(!s.exists("specs/new.spec.md"));
+}
+
 // specrail: specs/cli/mv.spec.md § 4.1 Unparseable files
 test "a dependency entry mv cannot rewrite stops it, rather than going stale" {
     // Found by fuzzing: the entry sat in a metadata block that is never

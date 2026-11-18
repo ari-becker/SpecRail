@@ -229,6 +229,20 @@ test "swap refuses a section and itself, or a section and one inside it" {
     try expectUnchanged(&s);
 }
 
+// specrail: specs/cli/swap.spec.md § 2.6 Sections kept
+test "a --- swapped into a file without a separator stops swap" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const ruled = "Context.\n\n---\n\n# § 1 One\n\nIt MUST work.\n\n---\n\nMore.\n";
+    try s.write("specs/ruled.spec.md", ruled);
+    const o = try runSwap(&s, "specs/ruled.spec.md § 1 One", login_path ++ " § 2 Logout");
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "would become its separator");
+    try testing.expectEqualStrings(ruled, try s.read("specs/ruled.spec.md"));
+    try expectUnchanged(&s);
+}
+
 // specrail: specs/cli/swap.spec.md § 2.3 Unparseable files
 test "a spec file that ends inside an unclosed code block is not rewritten" {
     var s = try sandbox.Sandbox.init();
