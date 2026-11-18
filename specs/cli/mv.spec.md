@@ -65,7 +65,10 @@ saying which one is stale or dangling, and exit with status 1.
 
 Given a destination with the same path and number as the source and a
 different title, mv MUST change the section's title and rewrite every
-reference and dependency entry naming it.
+reference and dependency entry naming it. It MUST NOT renumber any section,
+even in a file numbered out of order, and MUST change nothing and exit with
+status 2 when another section of the file has the same number and the new
+title.
 
 ## § 2.3 Move a section
 

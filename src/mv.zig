@@ -321,17 +321,30 @@ fn land(
     const dst = other orelse src;
     try dst.entries.insertSlice(e.ctx.arena, index, block);
     const moved = [_]edit.Name{block[0].old};
-    if (other) |o| return e.finishSections(&.{ src, o }, &moved);
-    return e.finishSections(&.{src}, &moved);
+    if (other) |o| return e.finishSections(&.{ src, o }, &moved, .by_position);
+    return e.finishSections(&.{src}, &moved, .by_position);
 }
 
 /// Changes a section's title in place.
 fn retitle(e: *Editor, source: edit.Place, title: []const u8) Error!void {
+    const file = &e.specs[source.file];
+    const number = file.sections[source.index].number;
+    if (file.titleTaken(source.index, number, title)) {
+        const msg = "§ {s} {s} already exists in {s}, and mv does not overwrite sections";
+        return e.stop(2, msg, .{ number, title, file.path });
+    }
     var o = try e.outline(source.file);
     const entry = &o.entries.items[source.index];
     const moved = [_]edit.Name{entry.old};
     entry.title = title;
-    return e.finishSections(&.{&o}, &moved);
+    // A retitle changes one heading; renumbering the file is fmt's to do.
+    return e.finishSections(&.{&o}, &moved, .as_written);
+}
+
+/// Plans `specrail mv <from> <to>` on an editor already open, writing
+/// nothing. The language server's rename is checked against it.
+pub fn planMove(e: *Editor, from: []const u8, to: []const u8) Error!void {
+    return plan(e, .{ .from = from, .target = to });
 }
 
 /// Runs `specrail mv` and returns its exit status.
@@ -514,6 +527,37 @@ test "a retitled section takes its references and dependency entries along" {
     const reference = "// specrail: specs/auth/login.spec.md § 1.2 Google sign-in\n";
     try sandbox.expectContains(try s.read("src/t.zig"), reference);
     try expectChecks(&s);
+}
+
+// specrail: specs/cli/mv.spec.md § 2.2 Retitle
+test "a retitle renumbers nothing, even in a file numbered out of order" {
+    // Found by fuzzing the language server's rename, which kept the numbers
+    // that mv's retitle renumbered by position.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    try s.write("specs/odd.spec.md", "# § 2 One\n\nIt MUST work.\n\n# § 1 Two\n\nIt MUST work.\n");
+    const o = try runMv(&s, &.{ "specs/odd.spec.md § 2 One", "specs/odd.spec.md § 2 First" });
+    try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings("specs/odd.spec.md § 2 First\nspecs/odd.spec.md\n", o.stdout);
+    const renamed = "# § 2 First\n\nIt MUST work.\n\n# § 1 Two\n\nIt MUST work.\n";
+    try testing.expectEqualStrings(renamed, try s.read("specs/odd.spec.md"));
+    // Found by fuzzing the rename too: a heading kept its line ending there,
+    // and took the file's here.
+    const mixed = "# § 1 One\n\nIt MUST work.\r\n\r\n# § 2 Two\r\n\r\nIt MUST work.\r\n";
+    try s.write("specs/mixed.spec.md", mixed);
+    const two = "specs/mixed.spec.md § 2 Two";
+    const retitled = try runMv(&s, &.{ two, "specs/mixed.spec.md § 2 Second" });
+    try testing.expectEqual(@as(u8, 0), retitled.code);
+    const second = "# § 1 One\n\nIt MUST work.\r\n\r\n# § 2 Second\r\n\r\nIt MUST work.\r\n";
+    try testing.expectEqualStrings(second, try s.read("specs/mixed.spec.md"));
+    // Found by fuzzing too: keeping the numbers, a retitle could duplicate a
+    // heading that a file numbered out of order already has.
+    const twice = "# § 1 Two\n\nIt MUST work.\n\n# § 1 One\n\nIt MUST work.\n";
+    try s.write("specs/twice.spec.md", twice);
+    const taken = try runMv(&s, &.{ "specs/twice.spec.md § 1 Two", "specs/twice.spec.md § 1 One" });
+    try testing.expectEqual(@as(u8, 2), taken.code);
+    try sandbox.expectContains(taken.stderr, "§ 1 One already exists");
 }
 
 // specrail: specs/cli/mv.spec.md § 2.3 Move a section
@@ -1080,10 +1124,16 @@ fn moveAnySection(_: void, smith: *testing.Smith) !void {
     try fuzzed.expectKept(arena, before, after);
     try testing.expectEqual(@as(usize, 1), e.addresses.items.len);
     const address = e.addresses.items[0];
-    try fuzzed.expectLanded(arena, after, address);
+    const old = refs.parseForm(from, .required).ok;
+    const new = refs.parseForm(address, .required).ok;
+    // A retitle keeps the numbers as written; a move numbers by position.
+    const same_place = std.mem.eql(u8, old.path, new.path) and
+        std.mem.eql(u8, old.number, new.number);
+    const retitled = request.placement == null and same_place;
+    try fuzzed.expectLanded(arena, after, address, if (retitled) .as_written else .by_position);
     // The titles are those before, with the section's own as it is now.
-    const old_title = refs.parseForm(from, .required).ok.title;
-    const new_title = refs.parseForm(address, .required).ok.title;
+    const old_title = old.title;
+    const new_title = new.title;
     var expected: std.ArrayList([]const u8) = .empty;
     errdefer expected.deinit(arena);
     var dropped = false;

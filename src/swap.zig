@@ -63,7 +63,7 @@ fn swapWithin(e: *Editor, a: edit.Place, b: edit.Place) Error!void {
     const middle = items[first_end..second];
     const swapped = try std.mem.concat(arena, edit.Entry, &.{ second_block, middle, first_block });
     try o.entries.replaceRange(arena, first, second_end - first, swapped);
-    return e.finishSections(&.{&o}, &names);
+    return e.finishSections(&.{&o}, &names, .by_position);
 }
 
 /// Exchanges two sections in different spec files.
@@ -80,7 +80,7 @@ fn swapAcross(e: *Editor, a: edit.Place, b: edit.Place) Error!void {
     try e.relevel(a_block, b_entry.level, .first);
     try oa.entries.insertSlice(arena, a.index, b_block);
     try ob.entries.insertSlice(arena, b.index, a_block);
-    return e.finishSections(&.{ &oa, &ob }, &names);
+    return e.finishSections(&.{ &oa, &ob }, &names, .by_position);
 }
 
 /// Runs `specrail swap` and returns its exit status.
@@ -357,7 +357,7 @@ fn swapAndBack(_: void, smith: *testing.Smith) !void {
     }
     try fuzzed.expectKept(arena, before, once);
     try testing.expectEqual(@as(usize, 2), e.addresses.items.len);
-    for (e.addresses.items) |address| try fuzzed.expectLanded(arena, once, address);
+    for (e.addresses.items) |address| try fuzzed.expectLanded(arena, once, address, .by_position);
     const titles_before = try fuzzed.titles(arena, before);
     const titles_once = try fuzzed.titles(arena, once);
     try testing.expectEqual(titles_before.len, titles_once.len);

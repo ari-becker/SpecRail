@@ -143,6 +143,7 @@ fn rewriteAll(
         try out.append(arena, try fileEdit(ix, arena, f.path, f.content, after));
     }
     for (ix.analysis.specs) |*file| {
+        if (!file.rewritable() and edit.namesChange(rw, file)) return broken(arena, file.path);
         const content = ix.contents.get(file.path) orelse continue;
         const lines = try rewrite.splitLines(arena, content);
         var changed = (try rewrite.rewriteDependencies(arena, rw, file, lines)) != null;
@@ -158,7 +159,7 @@ fn rewriteAll(
             }
         }
         if (!changed) continue;
-        if (file.broken or file.duplicate) return broken(arena, file.path);
+        if (!file.rewritable()) return broken(arena, file.path);
         const after = try std.mem.concat(arena, u8, lines);
         try out.append(arena, try fileEdit(ix, arena, file.path, content, after));
     }
@@ -216,8 +217,13 @@ pub fn rename(
     if (title.len == 0 or std.mem.findAny(u8, title, "\r\n") != null) {
         return .{ .refused = "a title is one line of text" };
     }
-    if (sr.file.broken or sr.file.duplicate) return broken(arena, sr.file.path);
+    if (!sr.file.rewritable()) return broken(arena, sr.file.path);
     const s = sr.file.sections[sr.index];
+    // The same title changes nothing, as with `specrail mv`.
+    if (std.mem.eql(u8, title, s.title)) return .{ .edit = .{ .files = &.{} } };
+    if (sr.file.titleTaken(sr.index, s.number, title)) {
+        return .{ .refused = "another section has this number and title already" };
+    }
     const retitle: Retitle = .{
         .path = sr.file.path,
         .number = s.number,
@@ -329,4 +335,356 @@ test "a diff replaces changed lines, or the stretch between shared ends" {
     try std.testing.expectEqual(nav.Position{ .line = 1, .character = 0 }, tail[0].range.start);
     try std.testing.expectEqual(nav.Position{ .line = 1, .character = 1 }, tail[0].range.end);
     try std.testing.expectEqualStrings("b\nc", tail[0].insert);
+}
+
+// ---------------------------------------------------------------- fuzz tests
+
+const testing = std.testing;
+
+const check = @import("check.zig");
+const diag = @import("diag.zig");
+const fuzzing = @import("fuzzing.zig");
+const mv = @import("mv.zig");
+const project = @import("project.zig");
+const spec = @import("spec.zig");
+
+const fuzzed = edit.fuzzed;
+
+/// The server's index of a project held in memory.
+fn indexOf(arena: Allocator, proj: project.Project, encoding: text.Encoding) !nav.Index {
+    var contents: std.StringHashMapUnmanaged([]const u8) = .empty;
+    errdefer contents.deinit(arena);
+    for ([_][]const project.SourceFile{ proj.spec_files, proj.source_files }) |list| {
+        for (list) |f| try contents.put(arena, f.path, f.content);
+    }
+    const input: check.Input = .{
+        .spec_files = proj.spec_files,
+        .source_files = proj.source_files,
+    };
+    return .{
+        .root = proj.root,
+        .analysis = try check.analyze(arena, input, 20774 * 86400),
+        .spec_files = proj.spec_files,
+        .source_files = proj.source_files,
+        .contents = contents,
+        .encoding = encoding,
+    };
+}
+
+/// The byte offset in `content` of the LSP position `at`.
+fn offsetOf(content: []const u8, at: nav.Position, encoding: text.Encoding) usize {
+    var start: usize = 0;
+    var line: u32 = 0;
+    // Each step passes one line.
+    while (line < at.line) : (line += 1) {
+        const newline = std.mem.findScalarPos(u8, content, start, '\n') orelse return content.len;
+        start = newline + 1;
+    }
+    return start + text.byteOffset(text.lineAt(content[start..], 0), at.character, encoding);
+}
+
+fn startsBefore(_: void, a: TextEdit, b: TextEdit) bool {
+    if (a.range.start.line != b.range.start.line) return a.range.start.line < b.range.start.line;
+    return a.range.start.character < b.range.start.character;
+}
+
+/// `content` with `edits` made, as an editor makes them: the ranges counted
+/// in `encoding` against the text before any edit, and none overlapping.
+fn apply(
+    arena: Allocator,
+    content: []const u8,
+    edits: []const TextEdit,
+    encoding: text.Encoding,
+) ![]const u8 {
+    const order = try arena.dupe(TextEdit, edits);
+    std.mem.sort(TextEdit, order, {}, startsBefore);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(arena);
+    var at: usize = 0;
+    for (order) |e| {
+        const start = offsetOf(content, e.range.start, encoding);
+        const end = offsetOf(content, e.range.end, encoding);
+        try testing.expect(start >= at);
+        try testing.expect(end >= start);
+        try out.appendSlice(arena, content[at..start]);
+        try out.appendSlice(arena, e.insert);
+        at = end;
+    }
+    try out.appendSlice(arena, content[at..]);
+    return out.toOwnedSlice(arena);
+}
+
+/// Where a rename starts: a file, a line counted from 0, and a byte in it.
+const Spot = struct {
+    path: []const u8,
+    line: u32,
+    byte: usize,
+};
+
+/// A spot on a heading, a reference line or a dependency entry, or anywhere.
+fn madeUpSpot(smith: *testing.Smith, arena: Allocator, ix: *const nav.Index) !?Spot {
+    switch (smith.valueRangeAtMost(u8, 0, 3)) {
+        0 => {
+            const file = &ix.analysis.specs[smith.index(ix.analysis.specs.len)];
+            if (file.sections.len == 0) return null;
+            const s = file.sections[smith.index(file.sections.len)];
+            const byte = smith.index(file.lines[s.line - 1].len + 1);
+            return .{ .path = file.path, .line = s.line - 1, .byte = byte };
+        },
+        1 => {
+            const f = ix.source_files[smith.index(ix.source_files.len)];
+            const found = try refs.scanText(arena, f.content);
+            if (found.len == 0) return null;
+            const r = found[smith.index(found.len)];
+            const byte = r.ref.column - 1 + smith.valueRangeAtMost(u8, 0, 40);
+            return .{ .path = f.path, .line = r.line - 1, .byte = byte };
+        },
+        2 => {
+            const file = &ix.analysis.specs[smith.index(ix.analysis.specs.len)];
+            var entries: std.ArrayList(spec.Dependency) = .empty;
+            for (file.sections) |s| {
+                if (s.metadata) |m| try entries.appendSlice(arena, m.dependencies);
+            }
+            if (entries.items.len == 0) return null;
+            const d = entries.items[smith.index(entries.items.len)];
+            const byte = d.column - 1 + smith.valueRangeAtMost(u8, 0, 40);
+            return .{ .path = file.path, .line = d.line - 1, .byte = byte };
+        },
+        else => {
+            const path = fuzzing.pick(smith, &(fuzzing.spec_paths ++ [_][]const u8{"src/t.zig"}));
+            const line = smith.valueRangeAtMost(u32, 0, 40);
+            return .{ .path = path, .line = line, .byte = smith.valueRangeAtMost(u8, 0, 80) };
+        },
+    }
+}
+
+/// The content of the file at `path` in `proj`.
+fn contentOf(proj: project.Project, path: []const u8) ?[]const u8 {
+    for ([_][]const project.SourceFile{ proj.spec_files, proj.source_files }) |list| {
+        for (list) |f| {
+            if (std.mem.eql(u8, f.path, path)) return f.content;
+        }
+    }
+    return null;
+}
+
+/// Expects each file of `before`, with the edits `we` makes to it, to read
+/// as in `after`.
+fn expectEdited(
+    arena: Allocator,
+    ix: *const nav.Index,
+    we: WorkspaceEdit,
+    after: project.Project,
+) !void {
+    for ([_][]const project.SourceFile{ ix.spec_files, ix.source_files }) |list| {
+        for (list) |f| {
+            const uri = try ix.uri(arena, f.path);
+            const edits = for (we.files) |fe| {
+                if (std.mem.eql(u8, fe.uri, uri)) break fe.edits;
+            } else &[_]TextEdit{};
+            const got = try apply(arena, f.content, edits, ix.encoding);
+            const want = contentOf(after, f.path) orelse return error.TestUnexpectedResult;
+            try testing.expectEqualStrings(want, got);
+        }
+    }
+}
+
+/// A rename anywhere does what `specrail mv` does with the same retitle:
+/// both refuse, or the server's edits, made as an editor makes them, leave
+/// every file as mv leaves it.
+fn renameAsMvWould(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const before = try fuzzed.madeUp(smith, arena);
+    const encoding: text.Encoding = if (smith.value(bool)) .utf16 else .utf8;
+    const ix = try indexOf(arena, before, encoding);
+    const spot = (try madeUpSpot(smith, arena, &ix)) orelse return;
+    const target = nav.targetAt(&ix, spot.path, spot.line, spot.byte) orelse return;
+    // A seed read back picks the first: a title no made-up section has.
+    const title = fuzzing.pick(smith, &([_][]const u8{"Renamed"} ++ fuzzing.titles));
+    const outcome = try rename(&ix, arena, target, title);
+    const sr = sectionFor(&ix, target) orelse return testing.expect(outcome == .refused);
+    const s = sr.file.sections[sr.index];
+    const sign = refs.section_sign;
+    const from = try arena.print("{s} {s} {s} {s}", .{ sr.file.path, sign, s.number, s.title });
+    const to = try arena.print("{s} {s} {s} {s}", .{ sr.file.path, sign, s.number, title });
+    var e = try edit.Editor.fromProject(try fuzzed.context(arena), "mv", before);
+    const moved = if (mv.planMove(&e, from, to)) true else |err| switch (err) {
+        error.Stopped => false,
+        else => |other| return other,
+    };
+    errdefer {
+        const said = switch (outcome) {
+            .refused => |why| why,
+            .edit => "edits",
+        };
+        std.debug.print("rename at {s}:{d}:{d} to '{s}': {s}; mv '{s}' '{s}': {}\n", .{
+            spot.path, spot.line, spot.byte, title, said, from, to, moved,
+        });
+        fuzzed.show(before, before);
+    }
+    switch (outcome) {
+        .refused => try testing.expect(!moved),
+        .edit => |we| {
+            try testing.expect(moved);
+            try expectEdited(arena, &ix, we, try fuzzed.applied(arena, &e));
+        },
+    }
+}
+
+// specrail: specs/lsp.spec.md § 3.2 Rename
+test "a rename to the title a section has already changes nothing" {
+    // Found by fuzzing: the heading was rewritten anyway, its % as §.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const a: project.SourceFile = .{
+        .path = "specs/a.spec.md",
+        .content = "# % 1 One\n\nIt MUST work.\n",
+    };
+    const t: project.SourceFile = .{
+        .path = "src/t.zig",
+        .content = "// specrail: specs/a.spec.md % 1 One\n",
+    };
+    const proj: project.Project = .{
+        .root = "/nonexistent/specrail-test",
+        .config = .{ .spec_root = "specs" },
+        .spec_files = &.{a},
+        .source_files = &.{t},
+    };
+    const ix = try indexOf(arena, proj, .utf16);
+    const target = nav.targetAt(&ix, "specs/a.spec.md", 0, 3).?;
+    const same = try rename(&ix, arena, target, "One");
+    try testing.expectEqual(@as(usize, 0), same.edit.files.len);
+    const other = try rename(&ix, arena, target, "First");
+    try testing.expectEqual(@as(usize, 2), other.edit.files.len);
+}
+
+/// A project of the spec files `specs` and no source files.
+fn specsOnly(specs: []const project.SourceFile) project.Project {
+    return .{
+        .root = "/nonexistent/specrail-test",
+        .config = .{ .spec_root = "specs" },
+        .spec_files = specs,
+        .source_files = &.{},
+    };
+}
+
+// specrail: specs/lsp.spec.md § 3.2 Rename
+test "a rename refuses what mv refuses: an open block, an entry it cannot rewrite, a duplicate" {
+    // Found by fuzzing: mv refused both, and the rename went ahead.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const open: project.SourceFile = .{
+        .path = "specs/a.spec.md",
+        .content = "# § 1 One\n\nIt MUST work.\n\n```zig\nconst a = 1;\n",
+    };
+    const in_open = try indexOf(arena, specsOnly(&.{open}), .utf8);
+    const at_one = nav.targetAt(&in_open, "specs/a.spec.md", 0, 2).?;
+    try testing.expect((try rename(&in_open, arena, at_one, "First")) == .refused);
+    const fine: project.SourceFile = .{
+        .path = "specs/a.spec.md",
+        .content = "# § 1 One\n\nIt MUST work.\n",
+    };
+    const stale: project.SourceFile = .{
+        .path = "specs/b.spec.md",
+        .content = "# § 1 Waits\n```toml\ndependencies = [\"specs/a.spec.md § 1 One\"]\n",
+    };
+    const in_stale = try indexOf(arena, specsOnly(&.{ fine, stale }), .utf8);
+    const at_fine = nav.targetAt(&in_stale, "specs/a.spec.md", 0, 2).?;
+    try testing.expect((try rename(&in_stale, arena, at_fine, "First")) == .refused);
+    const twice: project.SourceFile = .{
+        .path = "specs/a.spec.md",
+        .content = "# § 1 Two\n\nIt MUST work.\n\n# § 1 One\n\nIt MUST work.\n",
+    };
+    const in_twice = try indexOf(arena, specsOnly(&.{twice}), .utf8);
+    const at_two = nav.targetAt(&in_twice, "specs/a.spec.md", 0, 2).?;
+    try testing.expect((try rename(&in_twice, arena, at_two, "One")) == .refused);
+}
+
+// specrail: specs/lsp.spec.md § 1.4 Position encoding
+// specrail: specs/lsp.spec.md § 3.2 Rename
+test "fuzz: a rename anywhere does what mv does" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, renameAsMvWould, .{ .corpus = corpus });
+}
+
+/// The section numbers of `content`, the spec file at `path`, in order.
+fn numbersOf(arena: Allocator, path: []const u8, content: []const u8) ![]const []const u8 {
+    var found: diag.List = .empty;
+    defer found.deinit(arena);
+    const file = try spec.parse(arena, path, content, &found);
+    const out = try arena.alloc([]const u8, file.sections.len);
+    for (file.sections, out) |s, *n| n.* = s.number;
+    return out;
+}
+
+/// `specs` with extra spaces in headings and around `=`, which fmt takes out.
+fn loosened(arena: Allocator, specs: []const project.SourceFile) ![]const project.SourceFile {
+    const out = try arena.alloc(project.SourceFile, specs.len);
+    for (specs, out) |f, *g| {
+        const headings = try std.mem.replaceOwned(u8, arena, f.content, "§ ", "§  ");
+        const keys = try std.mem.replaceOwned(u8, arena, headings, " = ", "=");
+        g.* = .{ .path = f.path, .content = keys };
+    }
+    return out;
+}
+
+/// Formatting a spec file makes, as an editor makes them, the edits fmt
+/// would make to it except renumbering, and changes nothing the second time.
+fn formatAsFmtWould(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var before = try fuzzed.madeUp(smith, arena);
+    // Half the time, and always for a seed read back, the files are made
+    // loose first, so that even tidy ones have something to format.
+    if (!smith.value(bool)) before.spec_files = try loosened(arena, before.spec_files);
+    const encoding: text.Encoding = if (smith.value(bool)) .utf16 else .utf8;
+    const ix = try indexOf(arena, before, encoding);
+    const path = fuzzing.pick(smith, &fuzzing.spec_paths);
+    const file = ix.analysis.file(path).?;
+    const content = ix.contents.get(path).?;
+    const edits = switch (try format(&ix, arena, path)) {
+        .edits => |x| x,
+        .refused => return testing.expect(file.broken or file.duplicate),
+    };
+    const formatted = try apply(arena, content, edits, encoding);
+    errdefer std.debug.print("--- {s}\n{s}\n--- formatted\n{s}\n", .{ path, content, formatted });
+    const by_fmt = (try fmt.formatKeepingNumbers(arena, file, content)).?;
+    try testing.expectEqualStrings(by_fmt, formatted);
+    const numbers = try numbersOf(arena, path, formatted);
+    try testing.expectEqual(file.sections.len, numbers.len);
+    for (file.sections, numbers) |s, n| try testing.expectEqualStrings(s.number, n);
+    if (!try fmt.outOfOrder(arena, file)) {
+        const planned = try fmt.plan(arena, before.spec_files, before.source_files, &.{path});
+        const want = for (planned.changes) |c| {
+            if (std.mem.eql(u8, c.path, path)) break c.after;
+        } else content;
+        try testing.expectEqualStrings(want, formatted);
+    }
+    const again_specs = try arena.dupe(project.SourceFile, before.spec_files);
+    for (again_specs) |*f| {
+        if (std.mem.eql(u8, f.path, path)) f.content = formatted;
+    }
+    var again = before;
+    again.spec_files = again_specs;
+    const again_ix = try indexOf(arena, again, encoding);
+    switch (try format(&again_ix, arena, path)) {
+        .edits => |x| try testing.expectEqual(@as(usize, 0), x.len),
+        .refused => return error.TestUnexpectedResult,
+    }
+}
+
+// specrail: specs/lsp.spec.md § 1.4 Position encoding
+// specrail: specs/lsp.spec.md § 3.3 Formatting
+test "fuzz: formatting makes fmt's edits, once" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, formatAsFmtWould, .{ .corpus = corpus });
 }

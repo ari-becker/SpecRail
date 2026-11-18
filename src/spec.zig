@@ -94,6 +94,30 @@ pub const SpecFile = struct {
     /// The 0-based index of the opening line of a fenced code block that is
     /// never closed, and so runs to the end of the file.
     open_fence: ?usize = null,
+
+    /// Whether `specrail mv`, `specrail swap` and the language server's
+    /// rename may rewrite the file. Not when it is broken or has a duplicate
+    /// heading, nor when it ends inside an unclosed code block: a section
+    /// moved out of it would carry the block along, and one moved in after
+    /// it would be buried in it.
+    pub fn rewritable(file: *const SpecFile) bool {
+        return !file.broken and !file.duplicate and file.open_fence == null;
+    }
+
+    /// Whether a section other than the one at `index` has `number` and
+    /// `title`, which retitling that one to `title` would duplicate.
+    pub fn titleTaken(
+        file: *const SpecFile,
+        index: usize,
+        number: []const u8,
+        title: []const u8,
+    ) bool {
+        for (file.sections, 0..) |s, i| {
+            if (i == index or !std.mem.eql(u8, s.number, number)) continue;
+            if (std.mem.eql(u8, s.title, title)) return true;
+        }
+        return false;
+    }
 };
 
 /// Numbers sections by position. Each call to `next` takes the heading level

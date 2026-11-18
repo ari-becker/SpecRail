@@ -120,7 +120,10 @@ fn allBlank(lines: []const []const u8) bool {
 }
 
 /// Whether any dependency entry of `file` names something `rw` changes.
-fn namesChange(rw: rewrite.Rewriter, file: *const spec.SpecFile) bool {
+/// The rewriting skips a metadata block that is never closed or does not
+/// parse, though check still reads its entries, so a command refuses a file
+/// it cannot rewrite when this is so, rather than leave an entry stale.
+pub fn namesChange(rw: rewrite.Rewriter, file: *const spec.SpecFile) bool {
     for (file.sections) |s| {
         const m = s.metadata orelse continue;
         for (m.dependencies) |d| {
@@ -145,6 +148,15 @@ pub fn isSection(arg: []const u8) bool {
 fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
+
+/// How an edit numbers the sections of the spec files it changes.
+pub const Numbers = enum {
+    /// Each section keeps the number written in its heading, as after a
+    /// retitle.
+    as_written,
+    /// Each section takes the number its position gives it, as after a move.
+    by_position,
+};
 
 /// A spec file being edited: the lines before its first section, then its
 /// sections in order.
@@ -222,14 +234,22 @@ pub const Outline = struct {
         return out;
     }
 
-    /// Numbers the entries by position, and records each one whose name
-    /// changes.
+    /// Numbers the entries as `numbers` says, and records each one whose
+    /// name changes.
     fn renumber(
         o: *Outline,
         arena: Allocator,
         renames: *std.ArrayList(Rename),
+        numbers: Numbers,
     ) Allocator.Error!void {
-        o.numbers = try o.positions(arena);
+        o.numbers = switch (numbers) {
+            .by_position => try o.positions(arena),
+            .as_written => written: {
+                const out = try arena.alloc([]const u8, o.entries.items.len);
+                for (o.entries.items, out) |e, *n| n.* = e.old.number;
+                break :written out;
+            },
+        };
         for (o.entries.items, o.numbers) |e, n| {
             const new: Name = .{ .path = o.path, .number = n, .title = e.title };
             if (!e.old.eql(new)) try renames.append(arena, .{ .old = e.old, .new = new });
@@ -274,7 +294,11 @@ pub const Outline = struct {
         const new: Name = .{ .path = o.path, .number = number, .title = e.title };
         if (e.old.eql(new) and e.level == e.old_level) return e.heading;
         const hashes = "######"[0..e.level];
-        const parts = .{ hashes, refs.section_sign, number, e.title, o.newline };
+        // A heading keeps its own line ending, as fmt's do; one moved in
+        // from another file takes this file's, as the lines after it do.
+        const foreign = !std.mem.eql(u8, e.old.path, o.path);
+        const ending = if (foreign) o.newline else rewrite.ending(e.heading);
+        const parts = .{ hashes, refs.section_sign, number, e.title, ending };
         return arena.print("{s} {s} {s} {s}{s}", parts);
     }
 
@@ -413,13 +437,9 @@ pub const Editor = struct {
         return error.Stopped;
     }
 
-    /// Whether the spec file at `index` has a section tree that can be
-    /// rewritten. A file that ends inside an unclosed code block cannot be:
-    /// a section moved out of it would carry the block along, and one moved
-    /// in after it would be buried in it.
+    /// Whether the spec file at `index` can be rewritten.
     pub fn rewritable(e: *const Editor, index: usize) bool {
-        const file = &e.specs[index];
-        return !file.broken and !file.duplicate and file.open_fence == null;
+        return e.specs[index].rewritable();
     }
 
     /// The outline of the spec file at `index`.
@@ -501,17 +521,22 @@ pub const Editor = struct {
         }
     }
 
-    /// Renumbers the edited outlines, records the new address of each
-    /// section in `moved`, and plans writing the outlines and rewriting what
-    /// names a section whose heading changed.
-    pub fn finishSections(e: *Editor, outlines: []const *Outline, moved: []const Name) Error!void {
+    /// Numbers the edited outlines as `numbers` says, records the new address
+    /// of each section in `moved`, and plans writing the outlines and
+    /// rewriting what names a section whose heading changed.
+    pub fn finishSections(
+        e: *Editor,
+        outlines: []const *Outline,
+        moved: []const Name,
+        numbers: Numbers,
+    ) Error!void {
         const arena = e.ctx.arena;
         var renames: std.ArrayList(Rename) = .empty;
         defer renames.deinit(arena);
         var edited: std.ArrayList(Write) = .empty;
         defer edited.deinit(arena);
         for (outlines) |o| {
-            try o.renumber(arena, &renames);
+            try o.renumber(arena, &renames, numbers);
             const content = try o.render(arena);
             try edited.append(arena, .{ .origin = o.path, .path = o.path, .content = content });
         }
@@ -871,11 +896,13 @@ pub const fuzzed = struct {
     }
 
     /// Expects `address` to name a section of `proj` exactly, and that
-    /// section's spec file to be numbered in order and rewritable.
+    /// section's spec file to be rewritable, and numbered in order when the
+    /// edit numbered it by position.
     pub fn expectLanded(
         arena: Allocator,
         proj: project.Project,
         address: []const u8,
+        numbers: Numbers,
     ) (Allocator.Error || ExpectError)!void {
         const form = switch (refs.parseForm(address, .required)) {
             .ok => |f| f,
@@ -887,7 +914,7 @@ pub const fuzzed = struct {
             if (!std.mem.eql(u8, file.path, form.path)) continue;
             try testing.expect(!file.broken);
             try testing.expect(!file.duplicate);
-            try testing.expect(!try fmt.outOfOrder(arena, file));
+            if (numbers == .by_position) try testing.expect(!try fmt.outOfOrder(arena, file));
         }
     }
 
