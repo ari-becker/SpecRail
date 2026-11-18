@@ -1,0 +1,23 @@
+[project]
+name = "specrail-lsp-tests"
+version = "0.0.0"
+description = "End-to-end tests of specrail lsp, driven the way editors' clients drive it"
+requires-python = ">=3.12"
+dependencies = ["pytest-lsp==1.0.1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# pytest-lsp warns when the server answers in a way the client did not ask
+# for; that fails the test.
+filterwarnings = [
+    "error::pytest_lsp.LspSpecificationWarning",
+    # pygls's own, on Python 3.14.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
+markers = [
+    "files(changes): files to write into the project before the server starts; None removes one",
+]
+
+[tool.ruff]
+line-length = 100

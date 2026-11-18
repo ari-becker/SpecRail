@@ -2,3 +2,8 @@
 zig-out/
 zig-pkg/
 *.o
+
+# The language server tests' Python environment.
+tests/lsp/.venv/
+__pycache__/
+.pytest_cache/
