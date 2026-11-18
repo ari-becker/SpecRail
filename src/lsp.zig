@@ -10,6 +10,7 @@ const json = std.json;
 
 const check = @import("check.zig");
 const cli = @import("cli.zig");
+const complete = @import("lsp_complete.zig");
 const diag = @import("diag.zig");
 const files = @import("files.zig");
 const nav = @import("lsp_nav.zig");
@@ -23,7 +24,8 @@ pub const usage =
     \\Run a Language Server Protocol server on stdin and stdout, for editors. The
     \\editor starts it once per workspace. It serves the project of the
     \\workspace's first folder, keeps its index in memory, and offers check's
-    \\diagnostics, go to definition, find references and hover.
+    \\diagnostics, go to definition, find references, hover, and completion of
+    \\spec file paths and headings.
     \\
     \\Options:
     \\  --stdio   Accepted and ignored: stdin and stdout are the only transport
@@ -43,6 +45,14 @@ const State = enum { initialized, shut_down, uninitialized };
 const Document = struct {
     uri: []const u8,
     text: []const u8,
+};
+
+/// A position in a document, as a project path, a line counted from 0, and a
+/// byte in that line.
+const At = struct {
+    path: []const u8,
+    index: u32,
+    byte: usize,
 };
 
 /// A diagnostic as LSP has it.
@@ -196,6 +206,7 @@ const Server = struct {
             return s.respond(arena, id, found);
         }
         if (is(method, "textDocument/hover")) return s.hover(arena, id, params);
+        if (is(method, "textDocument/completion")) return s.completion(arena, id, params);
         return s.fail(arena, id, method_not_found, "specrail does not offer this");
     }
 
@@ -296,6 +307,7 @@ const Server = struct {
                 .definitionProvider = true,
                 .referencesProvider = true,
                 .hoverProvider = true,
+                .completionProvider = .{ .triggerCharacters = .{ "§", "%" } },
             },
             .serverInfo = .{ .name = "specrail" },
         });
@@ -495,14 +507,10 @@ const Server = struct {
         };
     }
 
-    /// What the position a request names is on.
-    fn targetAt(
-        s: *const Server,
-        arena: Allocator,
-        params: ?json.Value,
-    ) Allocator.Error!?nav.Target {
-        if (s.index == null) return null;
-        const ix = &s.index.?;
+    /// The document, line and byte that a request's position names; null
+    /// without an index, or outside the project.
+    fn positionOf(s: *const Server, arena: Allocator, params: ?json.Value) Allocator.Error!?At {
+        const ix = if (s.index) |*ix| ix else return null;
         const uri = string(field(field(params, "textDocument"), "uri")) orelse return null;
         const position = field(params, "position");
         const line = integer(field(position, "line")) orelse return null;
@@ -512,7 +520,29 @@ const Server = struct {
         const content = ix.contents.get(path) orelse return null;
         const index: u32 = @intCast(line);
         const byte = text.byteOffset(text.lineAt(content, index), @intCast(character), s.encoding);
-        return nav.targetAt(ix, path, index, byte);
+        return .{ .path = path, .index = index, .byte = byte };
+    }
+
+    /// What the position a request names is on.
+    fn targetAt(
+        s: *const Server,
+        arena: Allocator,
+        params: ?json.Value,
+    ) Allocator.Error!?nav.Target {
+        const at = (try s.positionOf(arena, params)) orelse return null;
+        return nav.targetAt(&s.index.?, at.path, at.index, at.byte);
+    }
+
+    fn completion(
+        s: *Server,
+        arena: Allocator,
+        id: json.Value,
+        params: ?json.Value,
+    ) cli.Error!void {
+        const none = &[_]complete.Item{};
+        const at = (try s.positionOf(arena, params)) orelse return s.respond(arena, id, none);
+        const items = try complete.complete(&s.index.?, arena, at.path, at.index, at.byte);
+        try s.respond(arena, id, items);
     }
 
     fn hover(s: *Server, arena: Allocator, id: json.Value, params: ?json.Value) cli.Error!void {
@@ -976,4 +1006,81 @@ test "files created, changed or deleted on disk reach the index when the client 
     try testing.expectEqual(json.Value.null, answers.items[0].?);
     try testing.expectEqual(@as(?i64, 0), startLine(answers.items[1]));
     try testing.expectEqual(json.Value.null, answers.items[2].?);
+}
+
+/// Where a completion item's edit starts in its line.
+fn editStart(item: ?json.Value) ?i64 {
+    const range = field(field(item, "textEdit"), "range");
+    return integer(field(field(range, "start"), "character"));
+}
+
+/// The labels of a list of completion items.
+fn labels(arena: Allocator, items: ?json.Value) ![]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(arena);
+    for (items.?.array.items) |item| try out.append(arena, string(field(item, "label")).?);
+    return std.mem.join(arena, ", ", out.items);
+}
+
+fn opened(se: *Session, path: []const u8, content: []const u8) !void {
+    const document = .{
+        .uri = try se.uri(path),
+        .languageId = "text",
+        .version = 1,
+        .text = content,
+    };
+    try se.send(.{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{
+        .textDocument = document,
+    } });
+}
+
+// specrail: specs/lsp.spec.md § 2.4 Completion
+test "completion offers spec file paths, then that file's headings, inserted with §" {
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    const typing =
+        \\// specrail: specs/
+        \\// specrail: specs/a.spec.md § 1.
+        \\// specrail: specs/a.spec.md % 1.2
+        \\const x = 1; // specs/
+        \\
+    ;
+    try opened(&se, "src/t.zig", typing);
+    const entry = "dependencies = [\"specs/a.spec.md § 1.2 Google\", \"specs/a.spec.md § ";
+    try opened(&se, "specs/b.spec.md", try std.mem.replaceOwned(
+        u8,
+        se.arena(),
+        b_spec,
+        "dependencies = [\"specs/a.spec.md § 1.2 Google\"]",
+        entry,
+    ));
+    for (0..4) |i| {
+        const end: u32 = @intCast(text.lineAt(typing, i).len);
+        const at: nav.Position = .{ .line = @intCast(i), .character = end };
+        try se.ask(@intCast(i + 2), "textDocument/completion", "src/t.zig", at);
+    }
+    // In UTF-16, each § before the cursor takes one unit.
+    const entry_end: u32 = @intCast(entry.len - 2);
+    const in_entry: nav.Position = .{ .line = 2, .character = entry_end };
+    try se.ask(6, "textDocument/completion", "specs/b.spec.md", in_entry);
+    try se.finish();
+    const r = try se.run();
+    const arena = se.arena();
+    const paths = try labels(arena, r.result(2));
+    try testing.expectEqualStrings("specs/a.spec.md, specs/b.spec.md", paths);
+
+    try testing.expectEqual(@as(?i64, 13), editStart(element(r.result(2), 0)));
+    const headings = "§ 1 Login, § 1.1 Password, § 1.2 Google";
+    try testing.expectEqualStrings(headings, try labels(arena, r.result(3)));
+    const google = element(r.result(4), 2);
+    const inserted = string(field(field(google, "textEdit"), "newText")).?;
+    try testing.expectEqualStrings("§ 1.2 Google", inserted);
+    try testing.expectEqualStrings("% 1.2 Google", string(field(google, "filterText")).?);
+    const sign_at = editStart(google);
+    try testing.expectEqual(@as(?i64, 29), sign_at);
+    try testing.expectEqual(@as(usize, 0), r.result(5).?.array.items.len);
+    try testing.expectEqualStrings(headings, try labels(arena, r.result(6)));
 }

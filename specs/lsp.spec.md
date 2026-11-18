@@ -44,30 +44,18 @@ The server MUST serve the project of the client's first workspace folder, or
 of its root when the client sends no workspace folders.
 
 # § 2 Navigation
-```toml
-status = "planned"
-```
 
 ## § 2.1 Reference to section
-```toml
-status = "done"
-```
 
 Go to definition on a reference line or a dependency entry MUST return the
 heading of the section it names.
 
 ## § 2.2 Section to references
-```toml
-status = "done"
-```
 
 Find references on a section heading MUST return every reference and
 dependency entry naming that section or a section in its subtree.
 
 ## § 2.3 Hover
-```toml
-status = "done"
-```
 
 Hovering over a reference line or dependency entry MUST show the named
 section's heading, metadata block and own prose.
