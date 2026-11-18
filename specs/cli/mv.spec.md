@@ -144,9 +144,11 @@ has errors that prevent building the file's section tree.
 ## § 4.2 Report
 
 After moving or retitling a section, mv MUST print the section's new address
-in reference form to stdout on the first line. It MUST then print to stdout
-the path of each file it modified, one per line, and MUST print its errors to
-stderr.
+in reference form to stdout on the first line. It MUST then print to stdout,
+one per line, the new path of each file it wrote or moved, including every
+file that moved with its directory, whether or not specrail reads it. It MUST
+print its errors to stderr. When it cannot list the files in a directory it
+would move, mv MUST change nothing and exit with status 2.
 
 ## § 4.3 Failed writes
 

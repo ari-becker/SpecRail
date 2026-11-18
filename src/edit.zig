@@ -546,19 +546,13 @@ pub const Editor = struct {
     }
 
     /// Prints the new address of each moved section, then, sorted, the new
-    /// path of each project file that was moved or written.
+    /// path of each file that was moved or written, whatever it holds.
     fn report(e: *Editor) Error!void {
         const arena = e.ctx.arena;
         for (e.addresses.items) |a| try e.ctx.stdout.print("{s}\n", .{a});
         var touched: std.ArrayList([]const u8) = .empty;
         defer touched.deinit(arena);
-        const lists = [_][]const project.SourceFile{ e.proj.spec_files, e.proj.source_files };
-        for (lists) |list| {
-            for (list) |f| {
-                const now = try e.pending.finalPath(f.path);
-                if (now.ptr != f.path.ptr) try touched.append(arena, now);
-            }
-        }
+        try touched.appendSlice(arena, e.pending.moved.items);
         for (e.pending.writes.items) |w| try touched.append(arena, w.path);
         std.mem.sort([]const u8, touched.items, {}, lessThan);
         for (touched.items, 0..) |path, i| {

@@ -389,17 +389,56 @@ test "a spec file moves with the directory it is the parent of" {
 }
 
 // specrail: specs/cli/mv.spec.md § 1.2 Move a directory
-test "a directory moves with its parent file" {
+// specrail: specs/cli/mv.spec.md § 4.2 Report
+test "a directory moves with its parent file, and every file in it is reported" {
     var s = try sandbox.Sandbox.init();
     defer s.deinit();
     try authProject(&s);
     // Files under the spec root other than spec files move with their
-    // directory, and specrail does not read them.
+    // directory, and specrail does not read them, even those git ignores.
     try s.write("specs/auth/notes.txt", "Notes.\n");
+    try s.write("specs/auth/drafts/old.log", "Old.\n");
+    try s.write(".gitignore", "*.log\n");
     const o = try runMv(&s, &.{ "specs/auth/", "./specs/identity" });
     try testing.expectEqual(@as(u8, 0), o.code);
+    try testing.expectEqualStrings(
+        \\specs/identity.spec.md
+        \\specs/identity/drafts/old.log
+        \\specs/identity/login.spec.md
+        \\specs/identity/notes.txt
+        \\specs/other.spec.md
+        \\src/t.zig
+        \\
+    , o.stdout);
     try testing.expectEqualStrings("Notes.\n", try s.read("specs/identity/notes.txt"));
+    try testing.expectEqualStrings("Old.\n", try s.read("specs/identity/drafts/old.log"));
     try expectMoved(&s);
+}
+
+// specrail: specs/cli/mv.spec.md § 4.2 Report
+test "a directory whose files cannot be listed is not moved" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    try s.write("specs/auth/private/key.txt", "Key.\n");
+    const dir = s.tmp.dir;
+    try dir.setFilePermissions(testing.io, "specs/auth/private", .fromMode(0o000), .{});
+    // Wherever the directory ends up, it must be readable again to be removed.
+    const readable: std.Io.File.Permissions = .fromMode(0o755);
+    defer dir.setFilePermissions(testing.io, "specs/auth/private", readable, .{}) catch {};
+    defer dir.setFilePermissions(testing.io, "specs/identity/private", readable, .{}) catch {};
+    // A user who can read it anyway, such as root, cannot run this test.
+    const opened = dir.openDir(testing.io, "specs/auth/private", .{ .iterate = true });
+    const listable = if (opened) |d| yes: {
+        d.close(testing.io);
+        break :yes true;
+    } else |_| false;
+    if (listable) return error.SkipZigTest;
+    const o = try runMv(&s, &.{ "specs/auth", "specs/identity" });
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try testing.expectEqualStrings("", o.stdout);
+    try sandbox.expectContains(o.stderr, "cannot list the files in specs/auth");
+    try expectUnchanged(&s);
 }
 
 // specrail: specs/cli/mv.spec.md § 1.3 Existing destination

@@ -40,6 +40,9 @@ pub const Changes = struct {
     moves: std.ArrayList(Move) = .empty,
     /// The files to write once the moves are made.
     writes: std.ArrayList(Write) = .empty,
+    /// Where each file the moves take now is, filled in as the changes are
+    /// made: every file under a moved directory, whatever it holds.
+    moved: std.ArrayList([]const u8) = .empty,
 
     /// Makes every change, and returns 0; or, having reported why it could
     /// not, returns exit status 2. Every path is checked for symbolic links
@@ -54,6 +57,7 @@ pub const Changes = struct {
 
     fn makeOrStop(c: *Changes) Error!void {
         try c.guard();
+        try c.listMoved();
         const temps = try c.stage();
         try c.apply(temps);
     }
@@ -110,6 +114,40 @@ pub const Changes = struct {
         const link = (try files.symlinkOn(c.ctx.arena, c.ctx.io, c.root, path)) orelse return;
         const msg = "{s} is a symbolic link, and {s} does not follow symbolic links";
         return c.stop(msg, .{ link, c.command });
+    }
+
+    /// Lists where each file the moves take will be. Directories are walked
+    /// before anything is staged, so the staged files are not among them, and
+    /// symbolic links are listed, not followed.
+    fn listMoved(c: *Changes) Error!void {
+        const arena = c.ctx.arena;
+        for (c.moves.items) |mv| {
+            if (!try c.isDirectory(mv.old)) {
+                try c.moved.append(arena, try c.finalPath(mv.old));
+                continue;
+            }
+            c.walkMoved(mv) catch |err| switch (err) {
+                error.OutOfMemory, error.Stopped, error.WriteFailed => |e| return e,
+                else => |e| {
+                    const msg = "cannot list the files in {s}: {s}; nothing was changed";
+                    return c.stop(msg, .{ mv.old, @errorName(e) });
+                },
+            };
+        }
+    }
+
+    fn walkMoved(c: *Changes, mv: Move) (Error || Io.Dir.OpenError || Io.Dir.Iterator.Error)!void {
+        const arena = c.ctx.arena;
+        const io = c.ctx.io;
+        var dir = try Io.Dir.cwd().openDir(io, try c.abs(mv.old), .{ .iterate = true });
+        defer dir.close(io);
+        var walker = try dir.walk(arena);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind == .directory) continue;
+            const old = try Io.Dir.path.join(arena, &.{ mv.old, entry.path });
+            try c.moved.append(arena, try c.finalPath(old));
+        }
     }
 
     /// Writes the new content of every file to a new temporary file near
