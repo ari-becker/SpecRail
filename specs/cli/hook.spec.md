@@ -32,7 +32,8 @@ fi
 ```
 
 The client hook is a convenience, since `git push --no-verify` skips it; the
-server hook is the enforcement. Hosted providers that do not run custom server hooks can
+server hook is the enforcement. When the project lives in a subdirectory of
+the repository, both hooks take `--project <dir>` to say where. Hosted providers that do not run custom server hooks can
 get the same effect from a bot that is allowed to bypass branch protection:
 agents push claims to a side branch, and the bot runs the same check and
 fast-forwards the claim branch.
@@ -94,6 +95,13 @@ For each rejected update, it MUST print to stderr one line naming the first
 offending commit and the change that disqualifies it. It MUST exit with
 status 1 when it rejects any update, and 0 otherwise.
 
+## § 2.6 Project directory
+
+Given `--project <dir>`, pre-receive MUST read `specrail.toml` from `<dir>` in
+each tip instead of from the root of its tree, and MUST take the spec root as
+relative to `<dir>`. It MUST exit with status 2 when `<dir>` is absolute or
+contains a `..` component.
+
 # § 3 Client side
 
 ## § 3.1 Input
@@ -107,3 +115,10 @@ claim branch when pushing to the claim remote.
 
 When the remote's tip of the claim branch is not present locally, it MUST
 reject the push and suggest fetching first.
+
+## § 3.3 Project directory
+
+Given `--project <dir>`, pre-push MUST use the project whose `specrail.toml`
+is in `<dir>` under the top of the working tree, instead of searching from the
+working directory, and MUST exit with status 2 when `<dir>` holds no
+`specrail.toml`.

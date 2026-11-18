@@ -14,8 +14,8 @@ const project = @import("project.zig");
 
 /// Help text for `specrail hook --help`.
 pub const usage =
-    \\Usage: specrail hook pre-receive
-    \\       specrail hook pre-push <remote> [<url>]
+    \\Usage: specrail hook pre-receive [--project <dir>]
+    \\       specrail hook pre-push <remote> [<url>] [--project <dir>]
     \\
     \\Checks that updates to the claim branch consist only of claim commits:
     \\commits that only add, renew or remove assigned and assigned-until,
@@ -31,7 +31,9 @@ pub const usage =
     \\                branch that the server would refuse.
     \\
     \\Options:
-    \\  --help   Show this help
+    \\  --project <dir>   The project's directory in the repository, when its
+    \\                    specrail.toml is not at the top
+    \\  --help            Show this help
     \\
 ;
 
@@ -132,7 +134,7 @@ const Checker = struct {
     }
 };
 
-/// `specrail.toml` as a commit holds it at the root of its tree.
+/// The `specrail.toml` a commit holds in the project's directory.
 const ConfigAt = union(enum) {
     /// The commit has none, so specrail does not manage its branches.
     absent,
@@ -140,8 +142,18 @@ const ConfigAt = union(enum) {
     ok: config.Config,
 };
 
-fn configAt(ctx: *cli.Ctx, cwd: []const u8, commit: []const u8) Allocator.Error!ConfigAt {
-    const object = try ctx.arena.print("{s}:{s}", .{ commit, config.file_name });
+/// The `specrail.toml` that `commit` holds in `dir`, the project's
+/// directory in the repository, or at its top when `dir` is empty.
+fn configAt(
+    ctx: *cli.Ctx,
+    cwd: []const u8,
+    commit: []const u8,
+    dir: []const u8,
+) Allocator.Error!ConfigAt {
+    const object = if (dir.len == 0)
+        try ctx.arena.print("{s}:{s}", .{ commit, config.file_name })
+    else
+        try ctx.arena.print("{s}:{s}/{s}", .{ commit, dir, config.file_name });
     const o = try git.run(ctx, cwd, &.{ "cat-file", "blob", object }, null);
     if (!o.success) return .absent;
     return switch (try config.parseText(ctx.arena, o.stdout)) {
@@ -171,7 +183,7 @@ fn readInput(ctx: *cli.Ctx) cli.Error![]const u8 {
 }
 
 /// `specrail hook pre-receive`: checks every update to the claim branch.
-fn preReceive(ctx: *cli.Ctx) cli.Error!u8 {
+fn preReceive(ctx: *cli.Ctx, dir: []const u8) cli.Error!u8 {
     const input = try readInput(ctx);
     var rejected = false;
     var lines = std.mem.splitScalar(u8, input, '\n');
@@ -187,7 +199,7 @@ fn preReceive(ctx: *cli.Ctx) cli.Error!u8 {
         const old, const new, const ref = w;
         // The claim branch is the one the ref's old tip names.
         const source = if (git.isZero(old)) new else old;
-        const cfg = switch (try configAt(ctx, ctx.cwd, source)) {
+        const cfg = switch (try configAt(ctx, ctx.cwd, source, dir)) {
             .absent => continue,
             .err => |msg| {
                 const unreadable = "specrail: rejecting {s}: specrail.toml: {s}\n";
@@ -198,7 +210,8 @@ fn preReceive(ctx: *cli.Ctx) cli.Error!u8 {
             .ok => |c| c,
         };
         if (!isBranch(ref, cfg.claim_branch)) continue;
-        const k: Checker = .{ .ctx = ctx, .cwd = ctx.cwd, .cfg = cfg, .prefix = "" };
+        const prefix = if (dir.len == 0) "" else try ctx.arena.print("{s}/", .{dir});
+        const k: Checker = .{ .ctx = ctx, .cwd = ctx.cwd, .cfg = cfg, .prefix = prefix };
         const why = (try k.checkUpdate(old, new)) orelse continue;
         try ctx.stderr.print("specrail: rejecting {s}: {s}\n", .{ ref, why });
         rejected = true;
@@ -213,14 +226,14 @@ fn isBranch(ref: []const u8, branch: []const u8) bool {
 
 /// `specrail hook pre-push`: checks a push to the claim remote's claim branch
 /// as the server will.
-fn prePush(ctx: *cli.Ctx, args: []const []const u8) cli.Error!u8 {
+fn prePush(ctx: *cli.Ctx, args: []const []const u8, dir: []const u8) cli.Error!u8 {
     if (args.len == 0 or args.len > 2) {
         const msg = "pre-push takes the remote's name and URL, as git passes them";
         return cli.usageError(ctx, "hook", msg, .{});
     }
     // Read everything git sends, even when the push is not checked.
     const input = try readInput(ctx);
-    const settings = (try project.openConfig(ctx)) orelse return 2;
+    const settings = (try projectAt(ctx, dir)) orelse return 2;
     const cfg = settings.config;
     if (!std.mem.eql(u8, args[0], cfg.claim_remote)) return 0;
     const prefix = try git.run(ctx, settings.root, &.{ "rev-parse", "--show-prefix" }, null);
@@ -244,6 +257,24 @@ fn prePush(ctx: *cli.Ctx, args: []const []const u8) cli.Error!u8 {
     return if (rejected) 1 else 0;
 }
 
+/// The project for pre-push: found from the working directory, or, when
+/// `dir` names one, the one in `dir` under the top of the working tree.
+fn projectAt(ctx: *cli.Ctx, dir: []const u8) cli.Error!?project.Settings {
+    if (dir.len == 0) return project.openConfig(ctx);
+    const top = try git.run(ctx, ctx.cwd, &.{ "rev-parse", "--show-toplevel" }, null);
+    if (!top.success) {
+        try ctx.stderr.print("specrail: git rev-parse failed: {s}\n", .{top.reason()});
+        return null;
+    }
+    const root = try std.Io.Dir.path.join(ctx.arena, &.{ top.text(), dir });
+    // The search starts and stops in the directory named, so that a
+    // specrail.toml above it is never taken instead.
+    var local = ctx.*;
+    local.cwd = root;
+    local.root_ceiling = root;
+    return project.openConfig(&local);
+}
+
 /// Why the remote's tip cannot be checked against, when this repository does
 /// not have it; null when it does, or when the branch is new.
 fn unknownTip(ctx: *cli.Ctx, k: *const Checker, remote: []const u8) Allocator.Error!?[]const u8 {
@@ -254,16 +285,57 @@ fn unknownTip(ctx: *cli.Ctx, k: *const Checker, remote: []const u8) Allocator.Er
     return try ctx.arena.print(msg, .{remote[0..@min(12, remote.len)]});
 }
 
+/// A hook's arguments: those git passes, and the project directory that
+/// `--project` names, or "" for the root of the repository.
+const Options = struct {
+    positional: []const []const u8,
+    dir: []const u8 = "",
+};
+
+/// Reads a hook's arguments; null once a usage error has been reported.
+fn parseOptions(ctx: *cli.Ctx, args: []const []const u8) cli.Error!?Options {
+    var positional: std.ArrayList([]const u8) = .empty;
+    errdefer positional.deinit(ctx.arena);
+    var dir: []const u8 = "";
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (!std.mem.startsWith(u8, a, "--")) {
+            try positional.append(ctx.arena, a);
+            continue;
+        }
+        const eq = std.mem.findScalar(u8, a, '=');
+        if (!std.mem.eql(u8, a[0 .. eq orelse a.len], "--project")) {
+            _ = try cli.usageError(ctx, "hook", "unknown option '{s}'", .{a});
+            return null;
+        }
+        const value = if (eq) |at| a[at + 1 ..] else if (i + 1 < args.len) next: {
+            i += 1;
+            break :next args[i];
+        } else {
+            _ = try cli.usageError(ctx, "hook", "--project takes a directory", .{});
+            return null;
+        };
+        dir = config.normalizeDir(value) orelse {
+            const msg = "'{s}' is not a directory inside the repository";
+            _ = try cli.usageError(ctx, "hook", msg, .{value});
+            return null;
+        };
+    }
+    return .{ .positional = try positional.toOwnedSlice(ctx.arena), .dir = dir };
+}
+
 /// Runs `specrail hook` and returns its exit status.
 pub fn run(ctx: *cli.Ctx, args: []const []const u8) cli.Error!u8 {
     const sub = if (args.len > 0) args[0] else "";
+    const options = (try parseOptions(ctx, if (args.len > 0) args[1..] else args)) orelse return 2;
     if (std.mem.eql(u8, sub, "pre-receive")) {
-        if (args.len != 1) {
+        if (options.positional.len != 0) {
             return cli.usageError(ctx, "hook", "pre-receive takes no arguments", .{});
         }
-        return preReceive(ctx);
+        return preReceive(ctx, options.dir);
     }
-    if (std.mem.eql(u8, sub, "pre-push")) return prePush(ctx, args[1..]);
+    if (std.mem.eql(u8, sub, "pre-push")) return prePush(ctx, options.positional, options.dir);
     return cli.usageError(ctx, "hook", "hook takes pre-receive or pre-push", .{});
 }
 
@@ -579,4 +651,87 @@ test "pre-push checks pushes to the claim remote's claim branch" {
     const stale = try runPrePush(&s, "origin", claim, main_ref, unknown);
     try testing.expectEqual(@as(u8, 1), stale.code);
     try sandbox.expectContains(stale.stderr, "not in this repository; fetch first");
+}
+
+/// Makes `s` a repository whose project is in `tools/`, with nothing at its
+/// top but a README, and pushes it to the bare repository `r.git` in
+/// `remote`.
+fn nestedProject(s: *Sandbox, remote: *Sandbox) !void {
+    try remote.git(&.{ "git", "init", "-q", "--bare", "-b", "main", "r.git" });
+    try s.write("tools/specrail.toml", "spec_root = \"specs\"\n");
+    try s.write("tools/specs/a.spec.md", fixture.login);
+    try s.write("tools/src/t.zig", "// specrail: specs/a.spec.md § 1.2 Google\n");
+    try s.write("README.md", "The project is in tools/.\n");
+    try s.commitAll("init");
+    const url = try std.Io.Dir.path.join(s.arena_state.allocator(), &.{ remote.root, "r.git" });
+    try s.git(&.{ "git", "remote", "add", "origin", url });
+    try s.git(&.{ "git", "push", "-q", "origin", "main" });
+}
+
+/// Commits a claim on § 1.2 Google in the nested project, and then a change
+/// to a test, and returns both commits.
+fn nestedCommits(s: *Sandbox) !struct { []const u8, []const u8 } {
+    try s.write("tools/specs/a.spec.md", try googleHeldBy(s, "agent-7", "2026-11-17T02:00:00Z"));
+    try s.commitAll("claim");
+    const claim = try s.gitOutput(&.{ "git", "rev-parse", "HEAD" });
+    try s.write("tools/src/t.zig", "// changed\n");
+    try s.commitAll("not a claim");
+    const head = try s.gitOutput(&.{ "git", "rev-parse", "HEAD" });
+    try offer(s, "nested");
+    return .{ claim, head };
+}
+
+// specrail: specs/cli/hook.spec.md § 2.6 Project directory
+test "with --project, pre-receive reads the project from that directory" {
+    var remote = try Sandbox.init();
+    defer remote.deinit();
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try nestedProject(&s, &remote);
+    const base = try fixture.remoteTip(&remote);
+    const claim, const head = try nestedCommits(&s);
+    const run_in = struct {
+        fn hook(r: *Sandbox, args: []const []const u8, lines: []const u8) !Sandbox.Output {
+            return r.runIn("r.git", args, .{ .stdin = lines });
+        }
+    }.hook;
+    const plain = [_][]const u8{ "hook", "pre-receive" };
+    const nested = [_][]const u8{ "hook", "pre-receive", "--project", "tools" };
+    // Without --project, nothing at the top says the repository has claims.
+    const unmanaged = try run_in(&remote, &plain, try update(&s, base, head, main_ref));
+    try testing.expectEqual(@as(u8, 0), unmanaged.code);
+    const claimed = try run_in(&remote, &nested, try update(&s, base, claim, main_ref));
+    try testing.expectEqual(@as(u8, 0), claimed.code);
+    const mixed = try run_in(&remote, &nested, try update(&s, base, head, main_ref));
+    try testing.expectEqual(@as(u8, 1), mixed.code);
+    try sandbox.expectContains(mixed.stderr, "changes tools/src/t.zig, which is not a spec file");
+    for ([_][]const u8{ "../tools", "/tools" }) |dir| {
+        const args = [_][]const u8{ "hook", "pre-receive", "--project", dir };
+        try testing.expectEqual(@as(u8, 2), (try run_in(&remote, &args, "")).code);
+    }
+}
+
+// specrail: specs/cli/hook.spec.md § 3.3 Project directory
+test "with --project, pre-push uses the project in that directory" {
+    var remote = try Sandbox.init();
+    defer remote.deinit();
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try nestedProject(&s, &remote);
+    const base = try fixture.remoteTip(&remote);
+    const claim, const head = try nestedCommits(&s);
+    const arena = s.arena_state.allocator();
+    const of_claim = try arena.print("refs/heads/main {s} refs/heads/main {s}\n", .{ claim, base });
+    const of_head = try arena.print("refs/heads/main {s} refs/heads/main {s}\n", .{ head, base });
+    const plain = [_][]const u8{ "hook", "pre-push", "origin", "url" };
+    const nested = [_][]const u8{ "hook", "pre-push", "origin", "url", "--project=tools" };
+    // From the top of the working tree, the search finds no project.
+    const lost = try s.runIn("", &plain, .{ .stdin = of_claim });
+    try testing.expectEqual(@as(u8, 2), lost.code);
+    try testing.expectEqual(@as(u8, 0), (try s.runIn("", &nested, .{ .stdin = of_claim })).code);
+    const refused = try s.runIn("", &nested, .{ .stdin = of_head });
+    try testing.expectEqual(@as(u8, 1), refused.code);
+    try sandbox.expectContains(refused.stderr, "changes tools/src/t.zig, which is not a spec file");
+    const empty = [_][]const u8{ "hook", "pre-push", "origin", "url", "--project", "tools/src" };
+    try testing.expectEqual(@as(u8, 2), (try s.runIn("", &empty, .{ .stdin = of_claim })).code);
 }
