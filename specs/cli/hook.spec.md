@@ -33,10 +33,10 @@ fi
 
 The client hook is a convenience, since `git push --no-verify` skips it; the
 server hook is the enforcement. When the project lives in a subdirectory of
-the repository, both hooks take `--project <dir>` to say where. Hosted providers that do not run custom server hooks can
-get the same effect from a bot that is allowed to bypass branch protection:
-agents push claims to a side branch, and the bot runs the same check and
-fast-forwards the claim branch.
+the repository, both hooks take `--project <dir>` to say where. Hosted
+providers that do not run custom server hooks can get the same effect from a
+bot that is allowed to bypass branch protection: agents push claims to a side
+branch, and the bot runs the same check and fast-forwards the claim branch.
 
 ---
 

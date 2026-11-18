@@ -1,2 +1,196 @@
 # specrail
 Spec-driven-development, on guardrails, for coding agents and humans alike
+
+specrail keeps natural-language specs linked to the tests that prove them.
+Requirements live in numbered sections of Markdown files. A test names the
+requirement it verifies in a one-line comment. `specrail check` fails while
+any finished requirement has no test, or while any comment no longer matches
+the section it names. That gives an agent a signal to work against: a check
+that passes only once the spec is covered.
+
+specrail is built for AI agents first. Everything it reads and prints is easy
+to find with `rg` and costs few tokens. It never runs tests and never judges
+them; it only tracks that every requirement is claimed by at least one.
+
+## A spec and its test
+
+specrail is specified with specrail. This is the start of
+[`specs/cli/init.spec.md`](specs/cli/init.spec.md):
+
+````markdown
+`specrail init` sets up a project. Unlike most commands, it does not need an
+existing `specrail.toml`.
+
+---
+
+# § 1 Initializing a project
+
+## § 1.1 Create config
+
+`specrail init` MUST create `specrail.toml` in the working directory with
+`spec_root = "specs"`, and MUST create the `specs` directory when it does not
+exist.
+
+## § 1.2 Root file
+
+`specrail init` MUST create `root.spec.md` in the spec root when it does not
+exist. The file MUST hold only context explaining its purpose, so that
+`specrail check` passes on the new project. git does not track empty
+directories, and without this file a fresh clone would have no spec root at
+all.
+````
+
+And this is the test in [`src/init.zig`](src/init.zig) that verifies both
+sections:
+
+```zig
+// specrail: specs/cli/init.spec.md § 1.1 Create config
+// specrail: specs/cli/init.spec.md § 1.2 Root file
+test "init sets up a project that check accepts" {
+    ...
+}
+```
+
+The comment lines are the whole link. If either section is renumbered or
+retitled, `specrail check` reports the reference as stale, and `specrail mv`
+or `specrail fmt` rewrites it, here in this README as well as in the test. A
+section that is not built yet carries `status = "planned"` in a metadata
+block, and `check` counts it apart instead of asking for its test.
+
+Specs form one tree. `specs/cli.spec.md` is the parent of `specs/cli/`, and
+its context applies to every spec below it. `specs/root.spec.md` is the root
+of the tree. `specrail context` prints what an agent should read before
+working on a section: the context of every spec above it, its ancestors, the
+section itself, its dependencies and the tests that already verify it.
+
+[`specs/`](specs) is the full specification of specrail, and
+[`specs/root.spec.md`](specs/root.spec.md) is the place to start.
+
+## Installing
+
+specrail is a single binary. It needs `git` at run time, and Zig 0.17.1 to
+build:
+
+```sh
+git clone https://github.com/ari-becker/SpecRail.git
+cd SpecRail
+zig build -Doptimize=ReleaseSafe --prefix ~/.local
+```
+
+That installs `~/.local/bin/specrail`.
+
+## Getting started
+
+In the root of a git repository:
+
+```sh
+specrail init        # creates specrail.toml and specs/root.spec.md
+specrail check       # passes: there is nothing to cover yet
+```
+
+Then write specs under `specs/` and reference them from tests.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `specrail init` | Create `specrail.toml` and the spec root |
+| `specrail check` | Verify specs, references and coverage |
+| `specrail context` | Print what to read before working on a section |
+| `specrail fmt` | Renumber sections, rewrite references, normalize spec files |
+| `specrail mv` | Move or retitle a section, spec file or directory, rewriting references |
+| `specrail swap` | Exchange two sections, rewriting references |
+| `specrail claim` | Take a section for a limited time |
+| `specrail release` | Give up a claim early |
+| `specrail hook` | Check pushes to the claim branch, from git hook scripts |
+| `specrail lsp` | Run the language server |
+| `specrail skill` | Print the agent skill |
+
+Sections are named on the command line the way a test names them, so a
+reference can be pasted straight into a command. `%` can stand in for `§`:
+
+```sh
+specrail context 'specs/cli/init.spec.md % 1.1'
+specrail mv 'specs/cli/init.spec.md § 1.1 Create config' \
+            'specs/cli/init.spec.md § 1.1 Create the config file'
+```
+
+`fmt`, `mv` and `swap` rewrite every reference and dependency that names what
+they change, so section numbers and titles are never edited by hand. `specrail
+<command> --help` describes each command, and `specs/cli/` specifies it.
+
+## Agents
+
+Agents learn the workflow from a skill that is compiled into the binary, so
+it always matches the installed version. Install it wherever your agent looks
+for skills; for Claude Code:
+
+```sh
+mkdir -p .claude/skills/specrail
+specrail skill > .claude/skills/specrail/SKILL.md
+```
+
+## Claims, for fleets of agents
+
+When many agents pick work from the same specs at once, `specrail claim`
+lets one of them take a section for a limited time. It pushes a tiny commit
+to `main` that records who holds the section and until when. git accepts only
+one of two racing pushes, so two agents never build the same thing. An agent
+that a person drives from a terminal does not need claims.
+
+```sh
+export SPECRAIL_ASSIGNEE=agent-7
+specrail claim 'specs/cli/init.spec.md § 1.3 Spec root option' --for 2h
+```
+
+`specrail hook` lets a git server accept direct pushes to `main` only when
+they are valid claim commits. [`specs/cli/hook.spec.md`](specs/cli/hook.spec.md)
+has example server and client hook scripts.
+
+## Editors
+
+`specrail lsp` is a language server: go to definition from a reference to
+its section, find a section's references, hover, completion of paths and
+headings, diagnostics as you type, rename, formatting, a renumbering action,
+and reference updates when spec files are moved. It finds the project from
+the editor's workspace folder.
+
+Neovim 0.11 or later:
+
+```lua
+vim.lsp.config('specrail', {
+  cmd = { 'specrail', 'lsp' },
+  root_markers = { 'specrail.toml' },
+})
+vim.lsp.enable('specrail')
+```
+
+Emacs, with eglot, listing the modes of your specs and tests:
+
+```elisp
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '((markdown-mode python-mode zig-mode) . ("specrail" "lsp"))))
+```
+
+Neither Neovim's built-in client nor eglot tells servers when files are
+moved, so moving a spec file there leaves its references behind, and
+`specrail check` reports them as dangling. `specrail mv` moves the file and
+rewrites them.
+
+## Developing specrail
+
+```sh
+zig build test       # unit and integration tests, then specrail check on this repository
+zig build lint       # zlinter, with the rules in tools/lint/
+zig build test-lsp   # the language server driven by pytest-lsp; needs uv
+```
+
+`zig build test-lsp` plays the clients of VS Code, Neovim and Emacs against
+the server, using their recorded capabilities, and compares every edit the
+server returns with what the CLI does. CI runs all three, the tests on both
+Linux and macOS.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE)
