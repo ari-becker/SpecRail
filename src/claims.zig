@@ -149,7 +149,13 @@ pub fn withClaim(
         try kept.append(arena, .{ .key = "assigned-until", .value = c.until });
     }
     const closing = if (last_ending.len > 0) last_ending else newline;
-    const block = try render(arena, kept.items, newline, closing);
+    // An empty block stays when removing it would make a later block the
+    // section's metadata block.
+    const keep_empty = s.metadata != null and spec.tomlBlockFollows(lines[end..]);
+    const block = if (kept.items.len == 0 and keep_empty)
+        try arena.print("```toml{s}```{s}", .{ newline, closing })
+    else
+        try render(arena, kept.items, newline, closing);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(arena);
     for (lines[0..start]) |l| try out.appendSlice(arena, l);
@@ -373,6 +379,22 @@ fn claimed(arena: Allocator, content: []const u8, index: usize, claim: ?Claim) !
     return (try withClaim(arena, &file, content, index, claim)).?;
 }
 
+// specrail: specs/cli/claim.spec.md § 2.1 Release commit
+test "a released block stays, empty, when the next block would take its place" {
+    // Found by fuzzing: removing it made the code block below the metadata
+    // block, and the hook refused the release.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const content = "# § 1 One\n```toml\n```\n```toml\nnot = metadata\n```\nIt MUST work.\n";
+    const claim: Claim = .{ .assignee = "agent-7", .until = "2026-11-17T02:00:00Z" };
+    const held = try claimed(arena, content, 0, claim);
+    try testing.expectEqualStrings(content, try claimed(arena, held, 0, null));
+    const rules: Rules = .{ .now = 20774 * 86400 };
+    const why = try checkChange(arena, "specs/a.spec.md", held, content, rules);
+    try testing.expectEqual(@as(?[]const u8, null), why);
+}
+
 test "a claim is written as a canonical metadata block, and removed without a trace" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -470,3 +492,56 @@ pub const fixture = struct {
         return s.gitOutput(&.{ "git", "rev-parse", "HEAD" });
     }
 };
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// Noon UTC on 2026-11-17, before every expiry the made-up files hold.
+const fuzz_now: i64 = 20774 * 86400 + 12 * 3600;
+
+/// Fails, showing why the hook refused a change claim made.
+fn refused(why: []const u8, before: []const u8, after: []const u8) error{TestHookRefused} {
+    const parts = .{ why, before, after };
+    std.debug.print("hook refused: {s}\n--- before\n{s}\n--- after\n{s}\n", parts);
+    return error.TestHookRefused;
+}
+
+/// Wherever `specrail claim` would claim a section of any spec file, the
+/// hook accepts the change it writes, and the change that releases it.
+fn claimThenRelease(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = fuzzing.spec_paths[0];
+    const before = try fuzzing.specText(smith, arena);
+    var found: diag.List = .empty;
+    errdefer found.deinit(arena);
+    const file = try spec.parse(arena, path, before, &found);
+    if (file.broken or file.sections.len == 0) return;
+    const index = smith.index(file.sections.len);
+    // The claim command refuses these, and changes nothing.
+    if (conflict(&file, index, "fuzzer", fuzz_now) != null) return;
+    const claim: Claim = .{ .assignee = "fuzzer", .until = "2027-01-01T00:00:00Z" };
+    const with_claim = (try withClaim(arena, &file, before, index, claim)) orelse return;
+    const rules: Rules = .{ .now = fuzz_now };
+    if (try checkChange(arena, path, before, with_claim, rules)) |why| {
+        return refused(why, before, with_claim);
+    }
+    const held = try spec.parse(arena, path, with_claim, &found);
+    const released = (try withClaim(arena, &held, with_claim, index, null)) orelse
+        return error.TestUnexpectedResult;
+    if (try checkChange(arena, path, with_claim, released, rules)) |why| {
+        return refused(why, with_claim, released);
+    }
+}
+
+// specrail: specs/cli/claim.spec.md § 1.1 Claim commit
+// specrail: specs/cli/claim.spec.md § 2.1 Release commit
+// specrail: specs/cli/hook.spec.md § 1.1 Definition
+test "fuzz: the hook accepts every claim and release that claim writes" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, claimThenRelease, .{ .corpus = corpus });
+}

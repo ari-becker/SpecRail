@@ -43,6 +43,14 @@ why, so that the editor does not restart it in a loop.
 The server MUST serve the project of the client's first workspace folder, or
 of its root when the client sends no workspace folders.
 
+## § 1.7 Any input
+
+The server MUST keep running whatever the client sends. It MUST answer every
+request exactly once, whatever its parameters hold, including positions
+outside the document or outside the range LSP allows. It MUST read any bytes
+as messages until the stream ends, holding no more of a message in memory
+than the bytes that have arrived.
+
 # § 2 Navigation
 
 ## § 2.1 Reference to section

@@ -169,6 +169,19 @@ fn openFence(text: []const u8) ?Fence {
     return .{ .char = c, .len = n, .info = info };
 }
 
+/// Whether the first non-blank line of `rest`, the lines after a metadata
+/// block with their endings, opens a `toml` fenced block. Removing the
+/// metadata block would make that block the section's metadata block.
+pub fn tomlBlockFollows(rest: []const []const u8) bool {
+    for (rest) |raw| {
+        const text = std.mem.trimEnd(u8, raw, "\r\n");
+        if (std.mem.trim(u8, text, " \t").len == 0) continue;
+        const f = openFence(text) orelse return false;
+        return std.mem.eql(u8, f.info, "toml");
+    }
+    return false;
+}
+
 fn closesFence(text: []const u8, f: Fence) bool {
     const i = leadingSpaces(text);
     if (i > 3) return false;
@@ -216,7 +229,8 @@ fn splitLines(arena: Allocator, content: []const u8) Allocator.Error![]Line {
     return lines.toOwnedSlice(arena);
 }
 
-fn isSeparator(text: []const u8) bool {
+/// Whether `text`, a line without its ending, is a `---` line.
+pub fn isSeparator(text: []const u8) bool {
     return std.mem.startsWith(u8, text, "---") and std.mem.trim(u8, text[3..], " \t").len == 0;
 }
 

@@ -277,3 +277,79 @@ test "the ancestor files are the parent files of the directories above a spec" {
     const at_top = try ancestorFiles(arena, "", "auth/login.spec.md", &top);
     try testing.expectEqualStrings("auth.spec.md", at_top[1]);
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// One piece of a glob pattern.
+const GlobToken = union(enum) {
+    any_path,
+    any_segment,
+    literal: u8,
+    one,
+};
+
+/// Whether `pattern` matches `path`, worked out the long way: a table of
+/// which pattern suffixes match which path suffixes, filled from the end.
+/// It shares no code with `globMatch`, so the two check each other.
+fn globByTable(arena: Allocator, pattern: []const u8, path: []const u8) !bool {
+    var tokens: std.ArrayList(GlobToken) = .empty;
+    errdefer tokens.deinit(arena);
+    var i: usize = 0;
+    while (i < pattern.len) : (i += 1) {
+        const double = pattern[i] == '*' and i + 1 < pattern.len and pattern[i + 1] == '*';
+        try tokens.append(arena, switch (pattern[i]) {
+            '*' => if (double) .any_path else .any_segment,
+            '?' => .one,
+            else => .{ .literal = pattern[i] },
+        });
+        if (double) i += 1;
+    }
+    const width = path.len + 1;
+    const table = try arena.alloc(bool, (tokens.items.len + 1) * width);
+    @memset(table, false);
+    table[tokens.items.len * width + path.len] = true;
+    var t = tokens.items.len;
+    // Each step fills the row of one shorter pattern suffix.
+    while (t > 0) {
+        t -= 1;
+        var p = width;
+        while (p > 0) {
+            p -= 1;
+            const rest = (t + 1) * width;
+            const here = t * width;
+            table[here + p] = switch (tokens.items[t]) {
+                .any_path => table[rest + p] or (p < path.len and table[here + p + 1]),
+                .any_segment => table[rest + p] or
+                    (p < path.len and path[p] != '/' and table[here + p + 1]),
+                .one => p < path.len and path[p] != '/' and table[rest + p + 1],
+                .literal => |c| p < path.len and path[p] == c and table[rest + p + 1],
+            };
+        }
+    }
+    return table[0];
+}
+
+fn globsAgree(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const alphabet = "ab/*?.";
+    var pattern_buf: [10]u8 = undefined;
+    var path_buf: [12]u8 = undefined;
+    const pattern = fuzzing.bytes(smith, &pattern_buf);
+    const path = fuzzing.bytes(smith, &path_buf);
+    // Bytes outside a small alphabet would only make matches rarer.
+    for (pattern_buf[0..pattern.len]) |*c| c.* = alphabet[c.* % alphabet.len];
+    for (path_buf[0..path.len]) |*c| c.* = alphabet[c.* % (alphabet.len - 2)];
+    const expected = try globByTable(arena_state.allocator(), pattern, path);
+    try testing.expectEqual(expected, globMatch(pattern, path));
+}
+
+// specrail: specs/config.spec.md § 2.3 Glob syntax
+test "fuzz: glob matching agrees with a table of what each piece matches" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, globsAgree, .{ .corpus = corpus });
+}

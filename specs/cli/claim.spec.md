@@ -106,7 +106,9 @@ that finishes it, without a separate commit.
 
 `specrail release <section>` MUST push to the claim branch a commit that
 removes the section's `assigned` and `assigned-until` and changes nothing
-else. The commit MUST be built, retried and signed the same way as a claim
+else. It MUST also remove a metadata block left with no keys, unless the
+next non-blank content after it is another `toml` fenced block, which would
+then become the metadata block. The commit MUST be built, retried and signed the same way as a claim
 commit, with the subject `specrail release <section>`.
 
 ## § 2.2 Only the holder

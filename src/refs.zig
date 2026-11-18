@@ -293,3 +293,60 @@ test "percent elsewhere is text" {
     try testing.expect(!startsWithSign("% of users"));
     try testing.expect(startsWithSign("§1 typo"));
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// A line that is often a reference line: a comment marker, the marker, a
+/// section in reference form or any bytes, and maybe a closer.
+fn madeUpLine(smith: *testing.Smith, arena: std.mem.Allocator) ![]const u8 {
+    var buf: [40]u8 = undefined;
+    if (smith.boolWeighted(1, 3)) return fuzzing.bytes(smith, &buf);
+    const starts = [_][]const u8{ "// ", "# ", "-- ", "<!-- ", "/* ", "  * ", ";; ", "x = \"", "" };
+    const gaps = [_][]const u8{ " ", "  ", "\t", "" };
+    const ends = [_][]const u8{ "", "", " */", " -->", "*)", " -} -}", "\r" };
+    const middle = if (smith.boolWeighted(1, 4))
+        fuzzing.bytes(smith, &buf)
+    else
+        try fuzzing.form(smith, arena);
+    const start = fuzzing.pick(smith, &starts);
+    const gap = fuzzing.pick(smith, &gaps);
+    const parts = .{ start, marker, gap, middle, fuzzing.pick(smith, &ends) };
+    return arena.print("{s}{s}{s}{s}{s}", parts);
+}
+
+/// A form read from any line reads the same from the line that check's
+/// rewriting would write for it, closed as a block comment so that a title
+/// ending in a closer keeps it.
+fn formsRoundTrip(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const line = try madeUpLine(smith, arena);
+    const found = scanLine(line) orelse return;
+    try testing.expect(found.column >= 1);
+    try testing.expect(found.column <= line.len);
+    const form = switch (found.result) {
+        .ok => |f| f,
+        .err => return,
+    };
+    const parts = .{ marker, form.path, form.sign, form.number, form.title };
+    const rebuilt = try arena.print("/* {s} {s} {s} {s} {s} */", parts);
+    const again = switch ((scanLine(rebuilt) orelse return error.TestUnexpectedResult).result) {
+        .ok => |f| f,
+        .err => return error.TestUnexpectedResult,
+    };
+    try testing.expectEqualStrings(form.path, again.path);
+    try testing.expectEqualStrings(form.number, again.number);
+    try testing.expectEqualStrings(form.title, again.title);
+}
+
+// specrail: specs/format/references.spec.md § 1.1 Reference line
+// specrail: specs/format/references.spec.md § 1.3 Block comment closers
+test "fuzz: a reference form reads the same once written back" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, formsRoundTrip, .{ .corpus = corpus });
+}

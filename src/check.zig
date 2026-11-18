@@ -822,3 +822,53 @@ test "check exits 0 without errors and 1 with errors" {
         "specs/b.spec.md:1:1: error: § 1 Uncovered is not covered",
     );
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// The line `number`, counted from 1, of `content`; null past the end.
+fn lineOf(content: []const u8, number: u32) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var n: u32 = 1;
+    while (lines.next()) |l| : (n += 1) {
+        if (n == number) return std.mem.trimEnd(u8, l, "\r");
+    }
+    return null;
+}
+
+/// Every diagnostic names a file check was given, and a line and column in
+/// that file, whatever the files hold.
+fn positionsInside(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var buf: [400]u8 = undefined;
+    const raw = fuzzing.bytes(smith, &buf);
+    const first = if (smith.boolWeighted(1, 3)) raw else try fuzzing.specText(smith, arena);
+    const specs = [_]project.SourceFile{
+        .{ .path = fuzzing.spec_paths[0], .content = first },
+        .{ .path = fuzzing.spec_paths[1], .content = try fuzzing.specText(smith, arena) },
+    };
+    const sources = [_]project.SourceFile{
+        .{ .path = "src/t.zig", .content = try fuzzing.sourceText(smith, arena) },
+    };
+    const input: Input = .{ .spec_files = &specs, .source_files = &sources };
+    const analysis = try analyze(arena, input, test_now);
+    for (analysis.diagnostics.items) |d| {
+        const content = for (specs ++ sources) |f| {
+            if (std.mem.eql(u8, f.path, d.path)) break f.content;
+        } else return error.TestUnexpectedResult;
+        const l = lineOf(content, d.line) orelse return error.TestUnexpectedResult;
+        try testing.expect(d.line >= 1);
+        try testing.expect(d.column >= 1);
+        try testing.expect(d.column <= l.len + 1);
+    }
+}
+
+test "fuzz: check takes any files, and points inside them" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, positionsInside, .{ .corpus = corpus });
+}

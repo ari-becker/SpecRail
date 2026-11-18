@@ -19,6 +19,17 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // A fuzz input that failed, such as the one the Fuzz workflow keeps,
+    // joins every fuzz test's seeds, so that `zig build test` replays it.
+    const options = b.addOptions();
+    const fuzz_input = b.option(
+        []const u8,
+        "fuzz-input",
+        "Replay this fuzz input, relative to the project root, in every fuzz test",
+    );
+    options.addOption(?[]const u8, "fuzz_input", fuzz_input);
+    exe.root_module.addOptions("build_options", options);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
@@ -59,10 +70,13 @@ pub fn build(b: *std.Build) void {
     b.step("test-lint-rules", "Run the custom lint rules' tests").dependOn(&run_rule_tests.step);
 
     b.step("lint", "Lint the Zig sources").dependOn(lintStep(b));
+    b.step("test-lsp", "Run the language server's end-to-end tests").dependOn(lspTestStep(b, exe));
+}
 
-    // The language server driven the way editors drive it: pytest-lsp plays
-    // the clients of VS Code, Neovim and Emacs. It needs uv, so it is a step
-    // of its own rather than part of `test`.
+/// The language server driven the way editors drive it: pytest-lsp plays the
+/// clients of VS Code, Neovim and Emacs. It needs uv, so it is a step of its
+/// own rather than part of `test`.
+fn lspTestStep(b: *std.Build, exe: *std.Build.Step.Compile) *std.Build.Step {
     const lsp_tests = b.addSystemCommand(&.{
         "uv", "run", "--locked", "--project", "tests/lsp", "pytest", "-q", "tests/lsp",
     });
@@ -71,7 +85,7 @@ pub fn build(b: *std.Build) void {
     lsp_tests.stdio = .inherit;
     // The tests are not inputs the build system tracks, so they always run.
     lsp_tests.has_side_effects = true;
-    b.step("test-lsp", "Run the language server's end-to-end tests").dependOn(&lsp_tests.step);
+    return &lsp_tests.step;
 }
 
 /// The TigerStyle rules in `tools/lint/`, each named after its file.

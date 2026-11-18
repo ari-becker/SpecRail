@@ -100,6 +100,39 @@ fn allBlank(lines: []const []const u8) bool {
     return true;
 }
 
+fn isSeparatorLine(line: []const u8) bool {
+    return spec.isSeparator(rewrite.body(line));
+}
+
+/// Whether `lines` hold anything but blank lines and the `---` lines fmt
+/// drops.
+fn contentBefore(lines: []const []const u8, dropped: Dropped) bool {
+    for (lines, 0..) |l, i| {
+        const gone = i >= dropped.start and i < dropped.end and isSeparatorLine(l);
+        if (!gone and !allBlank(lines[i .. i + 1])) return true;
+    }
+    return false;
+}
+
+/// A run of lines, by index, from `start` up to `end`.
+const Dropped = struct {
+    start: usize,
+    end: usize,
+};
+
+/// The lines whose `---` lines fmt drops: none, or, when the separator has
+/// nothing but blank lines before it, the separator and every `---` line
+/// after it up to the first other content. Dropping only the separator would
+/// make the next `---` line the separator, with nothing before it either, and
+/// fmt would not be idempotent.
+fn droppedSeparators(raw: []const []const u8, separator: ?usize) Dropped {
+    const sep = separator orelse return .{ .start = 0, .end = 0 };
+    if (!allBlank(raw[0..sep])) return .{ .start = 0, .end = 0 };
+    var end = sep;
+    while (end < raw.len and (allBlank(raw[end .. end + 1]) or isSeparatorLine(raw[end]))) end += 1;
+    return .{ .start = sep, .end = end };
+}
+
 /// The number each section gets from its position.
 fn positions(arena: Allocator, file: *const spec.SpecFile) Allocator.Error![]const []const u8 {
     const out = try arena.alloc([]const u8, file.sections.len);
@@ -149,11 +182,15 @@ const Formatter = struct {
         for (secs, 0..) |s, i| heading_of[s.line - 1] = i;
         const first: ?usize = if (secs.len > 0) secs[0].line - 1 else null;
         const separator = f.file().separator;
-        const drop_separator = if (separator) |sep| allBlank(raw[0..sep]) else false;
-        const add_separator = separator == null and first != null and !allBlank(raw[0..first.?]);
+        const dropped = droppedSeparators(raw, separator);
+        // Whether a separator is missing is decided after dropping one, which
+        // can leave content before the first section.
+        const kept = separator != null and dropped.start == dropped.end;
+        const add_separator = !kept and first != null and
+            contentBefore(raw[0..first.?], dropped);
         var i: usize = 0;
         while (i < raw.len) : (i += 1) {
-            if (drop_separator and i == separator.?) continue;
+            if (i >= dropped.start and i < dropped.end and isSeparatorLine(raw[i])) continue;
             const si = heading_of[i] orelse {
                 try f.out.appendSlice(f.arena, raw[i]);
                 continue;
@@ -174,15 +211,22 @@ const Formatter = struct {
             // The block starts on the line after its opening fence; blank lines
             // between the heading and the block are dropped with it.
             const close = m.close_line - 1;
-            try f.block(si, raw[m.line - 1 .. close + 1]);
+            try f.block(si, raw[m.line - 1 .. close + 1], raw[close + 1 ..]);
             i = close;
         }
         return f.out.toOwnedSlice(f.arena);
     }
 
-    /// Writes a section's metadata block in canonical form, or nothing when it
-    /// is left with no keys. `fences` are the block's lines, fences included.
-    fn block(f: *Formatter, si: usize, fences: []const []const u8) Allocator.Error!void {
+    /// Writes a section's metadata block in canonical form. `fences` are the
+    /// block's lines, fences included, and `rest` the lines after them. A
+    /// block left with no keys goes, unless another `toml` block follows it,
+    /// which would take its place; then it stays, empty.
+    fn block(
+        f: *Formatter,
+        si: usize,
+        fences: []const []const u8,
+        rest: []const []const u8,
+    ) Allocator.Error!void {
         const lines = fences[1 .. fences.len - 1];
         const last_ending = rewrite.ending(fences[fences.len - 1]);
         var text: std.ArrayList(u8) = .empty;
@@ -208,7 +252,13 @@ const Formatter = struct {
             if (!isKnown(e.key)) try keys.append(f.arena, e);
         }
         if (f.redundantStatus(si, doc)) _ = keys.orderedRemove(0);
-        if (keys.items.len == 0) return;
+        if (keys.items.len == 0) {
+            // Removing the block would make the next one the metadata block.
+            if (spec.tomlBlockFollows(rest)) {
+                try f.out.print(f.arena, "```toml{s}```{s}", .{ f.newline, last_ending });
+            }
+            return;
+        }
         var width: usize = 0;
         for (keys.items) |e| width = @max(width, e.key.len);
         try f.out.print(f.arena, "```toml{s}", .{f.newline});
@@ -508,6 +558,27 @@ test "content before the first section gets a separator" {
     try f.expectAfter("specs/t.spec.md", "Intro.\n\n---\n# § 1 One\n\nIt MUST work.\n");
 }
 
+// specrail: specs/cli/fmt.spec.md § 1.2 Missing separator
+// specrail: specs/cli/fmt.spec.md § 1.3 Empty context
+// specrail: specs/cli/fmt.spec.md § 4.4 Idempotence
+test "a separator that separates nothing moves below the content after it" {
+    // Found by fuzzing: dropping the separator left content before the first
+    // section, and the next run added a separator back.
+    var f = try formatTest(&one("\n---\nIntro.\n# § 1 One\n\nIt MUST work.\n"), &.{}, null);
+    defer f.deinit();
+    try f.expectAfter("specs/t.spec.md", "\nIntro.\n\n---\n# § 1 One\n\nIt MUST work.\n");
+}
+
+// specrail: specs/cli/fmt.spec.md § 1.3 Empty context
+// specrail: specs/cli/fmt.spec.md § 4.4 Idempotence
+test "every --- line that would separate nothing goes at once" {
+    // Found by fuzzing: dropping only the first, the separator, made the
+    // second the separator for the next run to drop.
+    var f = try formatTest(&one("\r\n---\r\n---\r\n\r\n---\r\nText.\r\n---\r\n"), &.{}, null);
+    defer f.deinit();
+    try f.expectAfter("specs/t.spec.md", "\r\n\r\nText.\r\n---\r\n");
+}
+
 // specrail: specs/cli/fmt.spec.md § 1.3 Empty context
 test "a separator with nothing before it is removed" {
     var f = try formatTest(
@@ -686,6 +757,16 @@ test "metadata keys are ordered, aligned, and written canonically" {
         \\It MUST work.
         \\
     );
+}
+
+// specrail: specs/cli/fmt.spec.md § 3.5 Redundant metadata
+test "an empty block stays when the next block would take its place" {
+    // Found by fuzzing: without it, the code block below became metadata.
+    const prose = "\n```toml\nx = 1\n```\nIt MUST work.\n";
+    const content = "# § 1 One\n```toml\nstatus = \"done\"\n```\n" ++ prose;
+    var f = try formatTest(&one(content), &.{}, null);
+    defer f.deinit();
+    try f.expectAfter("specs/t.spec.md", "# § 1 One\n```toml\n```\n" ++ prose);
 }
 
 // specrail: specs/cli/fmt.spec.md § 3.5 Redundant metadata
@@ -956,4 +1037,70 @@ test "fmt keeps the permissions of the files it rewrites" {
     );
     const st = try s.tmp.dir.statFile(testing.io, "run.sh", .{});
     try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(st.permissions.toMode() & 0o777)));
+}
+
+// ---------------------------------------------------------------- fuzz tests
+
+const check = @import("check.zig");
+const fuzzing = @import("fuzzing.zig");
+
+/// `files` with `made` made.
+fn applied(
+    arena: Allocator,
+    files: []const project.SourceFile,
+    made: []const Change,
+) Allocator.Error![]const project.SourceFile {
+    const out = try arena.dupe(project.SourceFile, files);
+    for (out) |*f| {
+        for (made) |c| {
+            if (std.mem.eql(u8, c.path, f.path)) f.content = c.after;
+        }
+    }
+    return out;
+}
+
+/// Shows what fmt did to one file, for a failure.
+fn show(change: Change) void {
+    const parts = .{ change.path, change.before, change.after };
+    std.debug.print("--- {s} before\n{s}\n--- after\n{s}\n---\n", parts);
+}
+
+/// Formatting changes nothing in fmt's own output, and every reference and
+/// dependency entry that named a leaf exactly still does afterwards.
+fn formatTwice(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const specs = [_]project.SourceFile{
+        .{ .path = fuzzing.spec_paths[0], .content = try fuzzing.specText(smith, arena) },
+        .{ .path = fuzzing.spec_paths[1], .content = try fuzzing.specText(smith, arena) },
+    };
+    const sources = [_]project.SourceFile{
+        .{ .path = "src/t.zig", .content = try fuzzing.sourceText(smith, arena) },
+    };
+    const once = try plan(arena, &specs, &sources, null);
+    const specs_after = try applied(arena, &specs, once.changes);
+    const sources_after = try applied(arena, &sources, once.changes);
+    const twice = try plan(arena, specs_after, sources_after, null);
+    if (twice.changes.len != 0) {
+        for (once.changes) |c| show(c);
+        for (twice.changes) |c| show(c);
+        return error.TestNotIdempotent;
+    }
+    const before = try check.analyze(arena, .{ .spec_files = &specs, .source_files = &sources }, 0);
+    const input_after: check.Input = .{ .spec_files = specs_after, .source_files = sources_after };
+    const after = try check.analyze(arena, input_after, 0);
+    if (after.references.len < before.references.len) {
+        for (once.changes) |c| show(c);
+        return error.TestReferenceLost;
+    }
+}
+
+// specrail: specs/cli/fmt.spec.md § 2.2 Rewrite references
+// specrail: specs/cli/fmt.spec.md § 4.4 Idempotence
+test "fuzz: fmt's output is its own, and references still match" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, formatTwice, .{ .corpus = corpus });
 }

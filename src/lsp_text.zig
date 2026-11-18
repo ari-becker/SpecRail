@@ -131,3 +131,62 @@ test "lines come without their endings" {
     try std.testing.expectEqualStrings("c", lineAt("a\nb\nc", 2));
     try std.testing.expectEqualStrings("", lineAt("a\n", 5));
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// In both encodings, the byte offset of each character's column is where the
+/// character starts, even in text that is not valid UTF-8.
+fn columnsAgree(_: void, smith: *std.testing.Smith) !void {
+    var buf: [256]u8 = undefined;
+    const l = fuzzing.bytes(smith, &buf);
+    for ([_]Encoding{ .utf8, .utf16 }) |encoding| {
+        var previous: u32 = 0;
+        var i: usize = 0;
+        // Each step moves past one character, so the loop ends.
+        while (i <= l.len) : (i += sequenceLength(l[i])) {
+            const col = column(l, i, encoding);
+            try std.testing.expect(col >= previous);
+            try std.testing.expectEqual(i, byteOffset(l, col, encoding));
+            previous = col;
+            if (i == l.len) break;
+        }
+        try std.testing.expectEqual(l.len, byteOffset(l, std.math.maxInt(u32), encoding));
+    }
+}
+
+// specrail: specs/lsp.spec.md § 1.4 Position encoding
+test "fuzz: columns and byte offsets agree in both encodings" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const extra = [_][]const u8{
+        fuzzing.sliceSeed("// specrail: a.spec.md § 1 Café 😀 done"),
+        fuzzing.sliceSeed("\xf0\x9f\x98"),
+        fuzzing.sliceSeed("a\xff\xc3"),
+    };
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &extra);
+    try std.testing.fuzz({}, columnsAgree, .{ .corpus = corpus });
+}
+
+/// Any absolute path survives the trip to a URI and back.
+fn urisRoundTrip(_: void, smith: *std.testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var buf: [128]u8 = undefined;
+    const path = try std.mem.concat(arena, u8, &.{ "/", fuzzing.bytes(smith, &buf) });
+    const uri = try pathToUri(arena, path);
+    try std.testing.expectEqualStrings(path, (try uriToPath(arena, uri)).?);
+}
+
+test "fuzz: file URIs round-trip any path" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const extra = [_][]const u8{
+        fuzzing.sliceSeed("tmp/my specs/a§b.spec.md"),
+        fuzzing.sliceSeed("100%25/%zz/%"),
+    };
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &extra);
+    try std.testing.fuzz({}, urisRoundTrip, .{ .corpus = corpus });
+}

@@ -178,3 +178,25 @@ test "epoch seconds format as RFC 3339 date-times in UTC" {
         try std.testing.expectEqual(days_since, d.days());
     }
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+/// The last second of year 9999, the last a four-digit year can name.
+const year_9999_end: i64 = 253402300799;
+
+/// Any second from 1970 to the end of year 9999 survives formatting and
+/// parsing back.
+fn dateTimesRoundTrip(_: void, smith: *std.testing.Smith) !void {
+    const seconds = smith.valueRangeAtMost(i64, 0, year_9999_end);
+    var buf: [20]u8 = undefined;
+    const written = formatDateTime(&buf, seconds);
+    try std.testing.expectEqual(seconds, parseOffsetDateTime(written).ok);
+}
+
+// specrail: specs/format/metadata.spec.md § 2.1 Supported syntax
+test "fuzz: date-times round-trip through their RFC 3339 form" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try @import("fuzzing.zig").seeds(arena_state.allocator(), &.{});
+    try std.testing.fuzz({}, dateTimesRoundTrip, .{ .corpus = corpus });
+}

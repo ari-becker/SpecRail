@@ -495,3 +495,65 @@ test "a key that appears twice is an error" {
     const e = try expectErr(arena_state.allocator(), "a = 1\nb = 2\na = 3", "duplicate key 'a'");
     try testing.expectEqual(@as(u32, 3), e.line);
 }
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+
+/// Any text parses to a document whose keys are unique and lie in the text,
+/// or to an error at a position in the text.
+fn anyDocument(_: void, smith: *testing.Smith) !void {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const pieces = [_][]const u8{
+        "a = 1",
+        "b = \"x\"",
+        "c = [1, 2,",
+        "]",
+        "d = 2026-11-18T00:00:00Z",
+        "e = 'lit'",
+        "# note",
+        "a = true",
+        "f = [\"x\", ['y']]",
+        "g = 1.5",
+        "[table]",
+        "h = {}",
+        "",
+    };
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(arena);
+    var buf: [24]u8 = undefined;
+    // The fuzzer ends the document; a seed ends it when its bytes run out.
+    while (!smith.eosWeightedSimple(7, 1)) {
+        const piece = if (smith.boolWeighted(3, 1))
+            fuzzing.pick(smith, &pieces)
+        else
+            fuzzing.bytes(smith, &buf);
+        try text.appendSlice(arena, piece);
+        try text.append(arena, '\n');
+    }
+    const lines: u32 = @intCast(std.mem.count(u8, text.items, "\n") + 1);
+    switch (try parse(arena, text.items)) {
+        .err => |e| {
+            try testing.expect(e.line >= 1);
+            try testing.expect(e.line <= lines);
+            try testing.expect(e.column >= 1);
+        },
+        .ok => |doc| for (doc.entries, 0..) |entry, i| {
+            try testing.expect(entry.line >= 1);
+            try testing.expect(entry.line <= lines);
+            for (doc.entries[0..i]) |earlier| {
+                try testing.expect(!std.mem.eql(u8, earlier.key, entry.key));
+            }
+        },
+    }
+}
+
+// specrail: specs/format/metadata.spec.md § 2.3 Duplicate keys
+test "fuzz: any text is a document or an error inside it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, anyDocument, .{ .corpus = corpus });
+}

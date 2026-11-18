@@ -84,7 +84,8 @@ written.
 
 fmt MUST remove a `status = "done"` entry from a section whose effective
 status would be `done` without it, and MUST remove a metadata block left with
-no keys.
+no keys, unless the next non-blank content after it is another `toml` fenced
+block, which removing it would turn into the section's metadata block.
 
 # § 4 Operation
 

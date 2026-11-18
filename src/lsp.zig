@@ -534,8 +534,11 @@ const Server = struct {
         if (line < 0 or character < 0) return null;
         const path = (try s.projectPath(arena, uri)) orelse return null;
         const content = ix.contents.get(path) orelse return null;
-        const index: u32 = @intCast(line);
-        const byte = text.byteOffset(text.lineAt(content, index), @intCast(character), s.encoding);
+        // LSP positions are unsigned 32-bit numbers. A line past that is on
+        // no line, and a character past it is past the end of any line.
+        const index = std.math.cast(u32, line) orelse return null;
+        const col = std.math.cast(u32, character) orelse std.math.maxInt(u32);
+        const byte = text.byteOffset(text.lineAt(content, index), col, s.encoding);
         return .{ .path = path, .index = index, .byte = byte };
     }
 
@@ -687,7 +690,7 @@ fn listed(disk: project.Project, path: []const u8) bool {
 /// Reads one JSON-RPC message, framed by its `Content-Length` header, and
 /// returns its body; null at the end of the stream.
 fn readMessage(in: *Io.Reader, arena: Allocator) Allocator.Error!?[]const u8 {
-    var length: ?usize = null;
+    var length: ?u64 = null;
     // Each header line is read whole; the empty line ends the headers.
     while (in.takeDelimiter('\n') catch return null) |raw| {
         const line = std.mem.trimEnd(u8, raw, "\r");
@@ -695,13 +698,17 @@ fn readMessage(in: *Io.Reader, arena: Allocator) Allocator.Error!?[]const u8 {
         const colon = std.mem.findScalar(u8, line, ':') orelse continue;
         if (!std.ascii.eqlIgnoreCase(line[0..colon], "content-length")) continue;
         const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        length = std.fmt.parseInt(usize, value, 10) catch null;
+        length = std.fmt.parseInt(u64, value, 10) catch null;
     } else return null;
     const n = length orelse return "";
-    return in.readAllocAll(arena, n) catch |err| switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => null,
+    // The body grows as its bytes arrive, so a length that the client claims
+    // but never sends costs nothing.
+    var body: Io.Writer.Allocating = .init(arena);
+    in.streamExact64(&body.writer, n) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        error.ReadFailed, error.EndOfStream => return null,
     };
+    return body.written();
 }
 
 /// Runs `specrail lsp` and returns its exit status.
@@ -715,9 +722,200 @@ pub fn run(ctx: *cli.Ctx) cli.Error!u8 {
 
 const testing = std.testing;
 
+const fuzzing = @import("fuzzing.zig");
 const sandbox = @import("sandbox.zig");
 
 const Sandbox = sandbox.Sandbox;
+
+/// Reads messages from `input` until the stream ends. Each message takes at
+/// least the empty line that ends its headers, so there are no more messages
+/// than bytes.
+fn readEvery(_: void, smith: *testing.Smith) !void {
+    var buf: [600]u8 = undefined;
+    const input = fuzzing.bytes(smith, &buf);
+    var in: Io.Reader = .fixed(input);
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var count: usize = 0;
+    while (try readMessage(&in, arena_state.allocator())) |_| {
+        count += 1;
+        try testing.expect(count <= input.len);
+    }
+}
+
+/// The methods a made-up session calls. `initialize`, which would look for
+/// a project on disk, is left out: the session's project is in memory.
+const fuzz_methods = [_][]const u8{
+    "textDocument/definition",
+    "textDocument/references",
+    "textDocument/hover",
+    "textDocument/completion",
+    "textDocument/prepareRename",
+    "textDocument/rename",
+    "textDocument/formatting",
+    "textDocument/codeAction",
+    "workspace/willRenameFiles",
+    "textDocument/didOpen",
+    "textDocument/didChange",
+    "textDocument/didClose",
+    "textDocument/didSave",
+    "shutdown",
+    "no/such/method",
+};
+
+/// The URIs a made-up session names: the project's files, a new one, and
+/// some outside it.
+const fuzz_uris = [_][]const u8{
+    "file:///fuzz/specs/a.spec.md",
+    "file:///fuzz/specs/b.spec.md",
+    "file:///fuzz/src/t.zig",
+    "file:///fuzz/specs/new.spec.md",
+    "file:///fuzz/specs",
+    "file:///elsewhere/x.zig",
+    "untitled:1",
+};
+
+/// A count from a client: usually small, sometimes negative or huge.
+fn fuzzCount(smith: *testing.Smith, at_most: i64) i64 {
+    if (smith.boolWeighted(15, 1)) return smith.value(i64);
+    return smith.valueRangeAtMost(i64, -1, at_most);
+}
+
+/// The parameters of a made-up message: every field some method reads.
+fn fuzzParams(smith: *testing.Smith, arena: Allocator, w: *json.Stringify) !void {
+    const position = .{ .line = fuzzCount(smith, 40), .character = fuzzCount(smith, 120) };
+    const uri = fuzzing.pick(smith, &fuzz_uris);
+    const content = if (smith.boolWeighted(1, 1))
+        try fuzzing.specText(smith, arena)
+    else
+        try fuzzing.sourceText(smith, arena);
+    const old_uri = fuzzing.pick(smith, &fuzz_uris);
+    const rename = .{ .oldUri = old_uri, .newUri = fuzzing.pick(smith, &fuzz_uris) };
+    var buf: [16]u8 = undefined;
+    const name = fuzzing.bytes(smith, &buf);
+    try w.write(.{
+        .textDocument = .{ .uri = uri, .text = content, .version = 1 },
+        .position = position,
+        .range = .{ .start = position, .end = position },
+        .contentChanges = .{.{ .text = content }},
+        .newName = name,
+        .context = .{ .includeDeclaration = smith.value(bool), .diagnostics = .{} },
+        .options = .{ .tabSize = 4, .insertSpaces = true },
+        .files = .{rename},
+    });
+}
+
+/// Frames `body` as the client would and adds it to `input`.
+fn frame(arena: Allocator, input: *std.ArrayList(u8), body: []const u8) !void {
+    try input.print(arena, "Content-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+}
+
+/// Made-up messages for the session, and how many of them want an answer.
+fn fuzzSession(smith: *testing.Smith, arena: Allocator) !struct { []const u8, usize } {
+    var input: std.ArrayList(u8) = .empty;
+    errdefer input.deinit(arena);
+    var asked: usize = 0;
+    // The fuzzer ends the session; a seed ends it when its bytes run out.
+    while (!smith.eosWeightedSimple(4, 1)) {
+        var body: Io.Writer.Allocating = .init(arena);
+        var w: json.Stringify = .{ .writer = &body.writer };
+        const method = fuzzing.pick(smith, &fuzz_methods);
+        const is_request = !std.mem.startsWith(u8, method, "textDocument/did");
+        try w.beginObject();
+        try w.objectField("jsonrpc");
+        try w.write("2.0");
+        if (is_request) {
+            try w.objectField("id");
+            try w.write(asked);
+            asked += 1;
+        }
+        try w.objectField("method");
+        try w.write(method);
+        try w.objectField("params");
+        try fuzzParams(smith, arena, &w);
+        try w.endObject();
+        try frame(arena, &input, body.written());
+    }
+    try frame(arena, &input, "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}");
+    return .{ input.items, asked };
+}
+
+/// A server for a made-up project, without a disk: its files are in memory.
+fn fuzzServer(smith: *testing.Smith, ctx: *cli.Ctx) !Server {
+    const arena = ctx.arena;
+    const specs = try arena.alloc(project.SourceFile, fuzzing.spec_paths.len);
+    for (specs, fuzzing.spec_paths) |*f, path| {
+        f.* = .{ .path = path, .content = try fuzzing.specText(smith, arena) };
+    }
+    const sources = try arena.alloc(project.SourceFile, 1);
+    sources[0] = .{ .path = "src/t.zig", .content = try fuzzing.sourceText(smith, arena) };
+    var server: Server = .init(ctx);
+    errdefer server.deinit();
+    server.state = .initialized;
+    server.encoding = if (smith.value(bool)) .utf8 else .utf16;
+    server.disk = .{
+        .root = "/fuzz",
+        .config = .{ .spec_root = "specs" },
+        .spec_files = specs,
+        .source_files = sources,
+    };
+    try server.rebuild();
+    return server;
+}
+
+/// The server answers every request of any session about any project
+/// exactly once, with JSON, and does not fail.
+fn serveMadeUp(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const input, const asked = try fuzzSession(smith, arena);
+    var stdin: Io.Reader = .fixed(input);
+    var out: Io.Writer.Allocating = .init(arena);
+    var err: Io.Writer.Allocating = .init(arena);
+    var ctx: cli.Ctx = .{
+        .arena = arena,
+        .io = testing.io,
+        .stdout = &out.writer,
+        .stderr = &err.writer,
+        .cwd = "/fuzz",
+        .now = 20774 * 86400,
+        .stdin = &stdin,
+        .gpa = testing.allocator,
+    };
+    var server = try fuzzServer(smith, &ctx);
+    defer server.deinit();
+    _ = try server.serve();
+    var replies: Io.Reader = .fixed(out.written());
+    var answered: usize = 0;
+    while (try readMessage(&replies, arena)) |body| {
+        const reply = try json.parseFromSliceLeaky(json.Value, arena, body, .{});
+        if (field(reply, "method") == null) answered += 1;
+    }
+    try testing.expectEqual(asked, answered);
+}
+
+// specrail: specs/lsp.spec.md § 1.7 Any input
+test "fuzz: the server answers every request about any project, once" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, serveMadeUp, .{ .corpus = corpus });
+}
+
+// specrail: specs/lsp.spec.md § 1.1 Transport
+// specrail: specs/lsp.spec.md § 1.7 Any input
+test "fuzz: any bytes from the client are read as messages, or end the stream" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const extra = [_][]const u8{
+        fuzzing.sliceSeed("Content-Length: 2\r\n\r\n{}Content-Length: 5\r\n\r\nhello"),
+        fuzzing.sliceSeed("content-length:3\nX-Other: y\n\nabc"),
+        fuzzing.sliceSeed("Content-Length: 18446744073709551615\r\n\r\n{}"),
+    };
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &extra);
+    try testing.fuzz({}, readEvery, .{ .corpus = corpus });
+}
 
 const a_spec =
     \\# § 1 Login
@@ -952,6 +1150,34 @@ test "go to definition leads from a reference line or dependency entry to the he
         try testing.expectEqual(@as(?i64, 9), startLine(r.result(id)));
     }
     try testing.expectEqual(json.Value.null, r.result(4).?);
+}
+
+// specrail: specs/lsp.spec.md § 1.7 Any input
+test "positions beyond what LSP allows are answered, not trusted" {
+    // Found by fuzzing: a character past 32 bits stopped the server.
+    var s = try Sandbox.init();
+    defer s.deinit();
+    try lspProject(&s);
+    var se: Session = .{ .box = &s };
+    try se.start(&.{"utf-16"});
+    const huge: i64 = 1 << 40;
+    const document = .{ .uri = try se.uri("src/t.zig") };
+    const past_line = .{ .line = huge, .character = 0 };
+    const past_character = .{ .line = 1, .character = huge };
+    try se.send(.{ .jsonrpc = "2.0", .id = 2, .method = "textDocument/definition", .params = .{
+        .textDocument = document,
+        .position = past_line,
+    } });
+    try se.send(.{ .jsonrpc = "2.0", .id = 3, .method = "textDocument/definition", .params = .{
+        .textDocument = document,
+        .position = past_character,
+    } });
+    try se.finish();
+    const r = try se.run();
+    try testing.expectEqual(@as(u8, 0), r.code);
+    try testing.expectEqual(json.Value.null, r.result(2).?);
+    // Past the end of a reference line is still on it.
+    try testing.expectEqual(@as(?i64, 9), startLine(r.result(3)));
 }
 
 // specrail: specs/lsp.spec.md § 2.2 Section to references
