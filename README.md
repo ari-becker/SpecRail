@@ -198,8 +198,8 @@ in its own output and keeps references matching; mv and swap keep every
 reference that matched, lose no prose or title, and put each section where
 they say, and a swap undoes itself; the hook accepts every claim and release
 that `specrail claim` and `specrail release` write; the language server
-answers every request about any project exactly once; and the parsers take
-any text. `zig build test` runs each of them on fixed seeds; `--fuzz`
+answers every request about any project exactly once, and its rename and
+formatting do what mv and fmt do; and the parsers take any text. `zig build test` runs each of them on fixed seeds; `--fuzz`
 searches further, without a limit and with a web UI when the `=100K` is left
 off. Fuzzing needs a ReleaseSafe build: Debug builds for x86_64 use Zig's own
 backend, which does not instrument code for the fuzzer. A failing input is
@@ -210,8 +210,8 @@ that file instead.
 
 On every push, CI runs the tests on Linux and macOS, lint, and the language
 server tests. The Fuzz workflow searches for an hour every night, starting
-where the night before stopped, and keeps any input that fails as an
-artifact to replay.
+where the night before stopped, and for a quarter of an hour on every pull
+request; it keeps any input that fails as an artifact to replay.
 
 ## License
 

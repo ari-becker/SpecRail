@@ -1,11 +1,13 @@
 name: Fuzz
 
-# The fuzz tests search for an hour every night. CI's zig build test runs
-# each of them on fixed seeds on every push; this searches much further.
+# The fuzz tests search for an hour every night, and for a quarter of an hour
+# on every pull request. CI's zig build test runs each of them on fixed seeds
+# on every push; this searches much further.
 on:
   schedule:
     # 03:17 UTC, off the hour, when scheduled runs are fewer.
     - cron: "17 3 * * *"
+  pull_request:
   workflow_dispatch:
     inputs:
       minutes:
@@ -16,14 +18,15 @@ on:
 permissions:
   contents: read
 
-# One search at a time: they share what earlier searches found.
+# One search at a time on each branch: the nightly searches share what
+# earlier ones found, and a new push to a pull request replaces its search.
 concurrency:
-  group: fuzz
-  cancel-in-progress: false
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fuzz:
-    name: Fuzz for an hour
+    name: Fuzz
     runs-on: ubuntu-latest
     # The rounds stop by themselves before the deadline; this is the backstop.
     timeout-minutes: 80
@@ -33,11 +36,12 @@ jobs:
           persist-credentials: false
       # setup-zig keeps this job's Zig cache from one run to the next, and
       # with it the inputs each fuzz test has found, so every night starts
-      # where the last one stopped.
+      # where the last one stopped. A pull request starts from main's, and
+      # what it finds stays with the pull request.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: Fuzz
         env:
-          MINUTES: ${{ inputs.minutes || '55' }}
+          MINUTES: ${{ inputs.minutes || (github.event_name == 'pull_request' && '15') || '55' }}
         run: tools/fuzz-for.sh "$MINUTES" 100K
       # Replay it with: zig build test -Dfuzz-input=<path to crash>
       - name: Keep the input that failed
