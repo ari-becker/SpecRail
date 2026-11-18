@@ -181,15 +181,30 @@ rewrites them.
 ## Developing specrail
 
 ```sh
-zig build test       # unit and integration tests, then specrail check on this repository
-zig build lint       # zlinter, with the rules in tools/lint/
-zig build test-lsp   # the language server driven by pytest-lsp; needs uv
+zig build test              # unit and integration tests, then specrail check on this repository
+zig build lint              # zlinter, with the rules in tools/lint/
+zig build test-lsp          # the language server driven by pytest-lsp; needs uv
+zig build test --fuzz=100K  # search for inputs that break a fuzz test
+tools/fuzz-for.sh 60        # search for an hour, in rounds
 ```
 
 `zig build test-lsp` plays the clients of VS Code, Neovim and Emacs against
 the server, using their recorded capabilities, and compares every edit the
-server returns with what the CLI does. CI runs all three, the tests on both
-Linux and macOS.
+server returns with what the CLI does.
+
+The fuzz tests check properties against made-up inputs: fmt changes nothing
+in its own output and keeps references matching, the hook accepts every claim
+and release that `specrail claim` and `specrail release` write, the language
+server answers every request about any project exactly once, and the parsers
+take any text. `zig build test` runs each of them on fixed seeds; `--fuzz`
+searches further, without a limit and with a web UI when the `=100K` is left
+off. A failing input is saved in `.zig-cache/f/crash`, and
+`zig build test -Dfuzz-input=.zig-cache/f/crash` replays it.
+
+On every push, CI runs the tests on Linux and macOS, lint, and the language
+server tests. The Fuzz workflow searches for an hour every night, starting
+where the night before stopped, and keeps any input that fails as an
+artifact to replay.
 
 ## License
 

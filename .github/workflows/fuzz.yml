@@ -1,0 +1,49 @@
+name: Fuzz
+
+# The fuzz tests search for an hour every night. CI's zig build test runs
+# each of them on fixed seeds on every push; this searches much further.
+on:
+  schedule:
+    # 03:17 UTC, off the hour, when scheduled runs are fewer.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes to fuzz for
+        required: true
+        default: "55"
+
+permissions:
+  contents: read
+
+# One search at a time: they share what earlier searches found.
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz for an hour
+    runs-on: ubuntu-latest
+    # The rounds stop by themselves before the deadline; this is the backstop.
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # setup-zig keeps this job's Zig cache from one run to the next, and
+      # with it the inputs each fuzz test has found, so every night starts
+      # where the last one stopped.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Fuzz
+        env:
+          MINUTES: ${{ inputs.minutes || '55' }}
+        run: tools/fuzz-for.sh "$MINUTES" 100K
+      # Replay it with: zig build test -Dfuzz-input=<path to crash>
+      - name: Keep the input that failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash
+          path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/f/crash
+          if-no-files-found: ignore
