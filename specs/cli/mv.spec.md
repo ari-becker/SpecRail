@@ -139,7 +139,9 @@ root, is a symbolic link.
 ## § 4.1 Unparseable files
 
 mv MUST change nothing and exit with status 1 when a spec file it would modify
-has errors that prevent building the file's section tree.
+has errors that prevent building the file's section tree, or ends inside a
+fenced code block that is never closed, which a moved section would carry
+along or bury.
 
 ## § 4.2 Report
 

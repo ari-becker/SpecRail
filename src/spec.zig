@@ -91,6 +91,9 @@ pub const SpecFile = struct {
     broken: bool,
     /// Two sections share a number and a title.
     duplicate: bool,
+    /// The 0-based index of the opening line of a fenced code block that is
+    /// never closed, and so runs to the end of the file.
+    open_fence: ?usize = null,
 };
 
 /// Numbers sections by position. Each call to `next` takes the heading level
@@ -458,6 +461,7 @@ const Parser = struct {
         try p.readSections(sec_start);
         try p.buildTree();
         try p.checkProse();
+        const open_fence = try p.checkFences();
         p.markExtents();
         const texts = try p.arena.alloc([]const u8, n);
         for (p.lines, 0..) |l, i| texts[i] = l.text;
@@ -469,7 +473,23 @@ const Parser = struct {
             .separator = sep,
             .broken = p.broken,
             .duplicate = p.duplicate,
+            .open_fence = open_fence,
         };
+    }
+
+    /// Reports a fenced code block that is never closed, and returns the
+    /// index of its opening line.
+    fn checkFences(p: *Parser) Allocator.Error!?usize {
+        var open: ?usize = null;
+        for (p.lines, 0..) |l, i| {
+            if (l.kind != .fence) continue;
+            open = if (l.fence_open) i else null;
+        }
+        const at = open orelse return null;
+        const msg = "this code block is never closed, so everything after it, sections " ++
+            "included, is code; close it with a line of the same backticks or tildes";
+        try p.err(at, 1, msg, .{});
+        return at;
     }
 
     /// Records where each section's own text ends, and where its subtree does.
@@ -976,6 +996,26 @@ test "a section heading on the context side of the separator is an error" {
 }
 
 // specrail: specs/format/spec-files.spec.md § 3.1 Fenced code blocks
+// specrail: specs/format/spec-files.spec.md § 3.8 Unclosed code blocks
+test "a code block that is never closed is an error, and takes the rest of the file" {
+    var r = try parseTest(
+        \\# § 1 One
+        \\
+        \\```zig
+        \\# § 2 Swallowed
+        \\
+        \\It MUST work.
+        \\
+    );
+    defer r.deinit();
+    try r.expect(3, .err, "this code block is never closed");
+    try testing.expectEqual(@as(usize, 1), r.file.sections.len);
+    try testing.expectEqual(@as(?usize, 2), r.file.open_fence);
+    var closed = try parseTest("# § 1 One\n\n```zig\ncode\n```\nIt MUST work.\n");
+    defer closed.deinit();
+    try testing.expectEqual(@as(?usize, null), closed.file.open_fence);
+}
+
 test "headings, separators, metadata and keywords inside fences are ignored" {
     var r = try parseTest(
         \\Context.

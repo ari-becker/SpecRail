@@ -38,7 +38,7 @@ fn plan(e: *Editor, first_arg: []const u8, second_arg: []const u8) Error!void {
     if (pa.index == pb.index) {
         return e.stop(2, "both arguments name § {s} {s}", .{ a.number, a.title });
     }
-    if (edit.isBelow(a.number, b.number) or edit.isBelow(b.number, a.number)) {
+    if (e.contains(pa, pb) or e.contains(pb, pa)) {
         const msg = "one of § {s} and § {s} lies inside the other; swap exchanges " ++
             "sections where neither is inside the other";
         return e.stop(2, msg, .{ a.number, b.number });
@@ -229,6 +229,35 @@ test "swap refuses a section and itself, or a section and one inside it" {
     try expectUnchanged(&s);
 }
 
+// specrail: specs/cli/swap.spec.md § 2.3 Unparseable files
+test "a spec file that ends inside an unclosed code block is not rewritten" {
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const open = "# § 1 Open\n\n```zig\nconst a = 1;\n";
+    try s.write("specs/open.spec.md", open);
+    const o = try runSwap(&s, "specs/open.spec.md § 1 Open", login_path ++ " § 2 Logout");
+    try testing.expectEqual(@as(u8, 1), o.code);
+    try sandbox.expectContains(o.stderr, "this code block is never closed");
+    try testing.expectEqualStrings(open, try s.read("specs/open.spec.md"));
+    try expectUnchanged(&s);
+}
+
+// specrail: specs/cli/swap.spec.md § 1.4 Nested sections
+test "a section is inside another by its heading level, whatever its number" {
+    // Found by fuzzing: in a file numbered out of order, swap compared
+    // numbers, took two nested sections for separate ones, and crashed.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const odd = "# § 1.2 One\n\nIt MUST work.\n\n## § 1.1.1 Two\n\nIt MUST work.\n";
+    try s.write("specs/odd.spec.md", odd);
+    const o = try runSwap(&s, "specs/odd.spec.md § 1.2 One", "specs/odd.spec.md § 1.1.1 Two");
+    try testing.expectEqual(@as(u8, 2), o.code);
+    try sandbox.expectContains(o.stderr, "lies inside the other");
+    try testing.expectEqualStrings(odd, try s.read("specs/odd.spec.md"));
+}
+
 // specrail: specs/cli/swap.spec.md § 2.1 Below the spec root
 test "swap refuses paths, and sections outside the spec root" {
     var s = try sandbox.Sandbox.init();
@@ -298,4 +327,63 @@ test "when a file cannot be written, swap changes nothing and cleans up" {
     const other = try s.read("specs/other.spec.md");
     try sandbox.expectContains(other, "# § 1 Waits\n");
     try testing.expect(!s.exists("specs/auth/.login.spec.md.0.specrail-tmp"));
+}
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+const fuzzed = edit.fuzzed;
+
+/// Swapping any two sections keeps every reference and dependency entry that
+/// named a section exactly, keeps every title and line of prose, and puts
+/// each section where swap says; swapping them back restores every heading.
+fn swapAndBack(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const before = try fuzzed.madeUp(smith, arena);
+    var e = try Editor.fromProject(try fuzzed.context(arena), "swap", before);
+    const a = (try fuzzed.pickSection(smith, arena, &e)) orelse return;
+    const b = (try fuzzed.pickSection(smith, arena, &e)) orelse return;
+    plan(&e, a, b) catch |err| switch (err) {
+        // A refusal changes nothing; it only has to say so.
+        error.Stopped => return testing.expect(e.status != 0),
+        else => |other| return other,
+    };
+    const once = try fuzzed.applied(arena, &e);
+    errdefer {
+        std.debug.print("swap '{s}' '{s}'\n", .{ a, b });
+        fuzzed.show(before, once);
+    }
+    try fuzzed.expectKept(arena, before, once);
+    try testing.expectEqual(@as(usize, 2), e.addresses.items.len);
+    for (e.addresses.items) |address| try fuzzed.expectLanded(arena, once, address);
+    const titles_before = try fuzzed.titles(arena, before);
+    const titles_once = try fuzzed.titles(arena, once);
+    try testing.expectEqual(titles_before.len, titles_once.len);
+    for (titles_before, titles_once) |x, y| try testing.expectEqualStrings(x, y);
+    // Swapping the two back, at the addresses swap gave, restores every
+    // heading's file, level and title, in order.
+    var back = try Editor.fromProject(try fuzzed.context(arena), "swap", once);
+    plan(&back, e.addresses.items[0], e.addresses.items[1]) catch |err| switch (err) {
+        // A spec file swap cannot rewrite may name, by chance, a section the
+        // first swap renamed; swapping back would rename it again, so swap
+        // refuses, with status 1. Anything else that stops it is a bug.
+        error.Stopped => return testing.expectEqual(@as(u8, 1), back.status),
+        else => |other| return other,
+    };
+    const twice = try fuzzed.applied(arena, &back);
+    try fuzzed.expectKept(arena, once, twice);
+    const outline_before = try fuzzed.outlineOf(arena, before);
+    try testing.expectEqualStrings(outline_before, try fuzzed.outlineOf(arena, twice));
+}
+
+// specrail: specs/cli/swap.spec.md § 1.1 Exchange
+// specrail: specs/cli/swap.spec.md § 1.2 Across files
+// specrail: specs/cli/swap.spec.md § 2.5 Report
+test "fuzz: two sections swapped keep what names them, and swap back" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, swapAndBack, .{ .corpus = corpus });
 }

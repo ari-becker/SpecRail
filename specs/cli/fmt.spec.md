@@ -19,7 +19,9 @@ that heading, which turns the content into the file's context.
 
 ## § 1.3 Empty context
 
-fmt MUST remove a separator that has no non-blank content before it.
+fmt MUST remove a separator that has no non-blank content before it, unless
+removing it would make a later `---` line the separator, which would turn the
+sections above that line into context.
 
 ## § 1.4 Section sign
 

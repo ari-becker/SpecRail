@@ -126,6 +126,12 @@ Wherever specrail compares titles (in references, dependency entries and
 command arguments), it MUST compare them byte for byte after removing leading
 and trailing whitespace.
 
+## § 3.8 Unclosed code blocks
+
+check MUST report, as an error at its opening line, a fenced code block that
+is never closed. Such a block runs to the end of the file and turns every
+section heading after it into code.
+
 # § 4 Numbering
 
 Numbers follow position and are maintained by `specrail fmt`. An author or

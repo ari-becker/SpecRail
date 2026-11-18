@@ -182,7 +182,8 @@ const Formatter = struct {
         for (secs, 0..) |s, i| heading_of[s.line - 1] = i;
         const first: ?usize = if (secs.len > 0) secs[0].line - 1 else null;
         const separator = f.file().separator;
-        const dropped = droppedSeparators(raw, separator);
+        var dropped = droppedSeparators(raw, separator);
+        if (try f.promotesSeparator(raw, dropped)) dropped = .{ .start = 0, .end = 0 };
         // Whether a separator is missing is decided after dropping one, which
         // can leave content before the first section.
         const kept = separator != null and dropped.start == dropped.end;
@@ -215,6 +216,26 @@ const Formatter = struct {
             i = close;
         }
         return f.out.toOwnedSlice(f.arena);
+    }
+
+    /// Whether dropping the `---` lines in `dropped` would make a later `---`
+    /// line the separator, and so turn the sections above it into context.
+    fn promotesSeparator(
+        f: *Formatter,
+        raw: []const []const u8,
+        dropped: Dropped,
+    ) Allocator.Error!bool {
+        if (dropped.start == dropped.end) return false;
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(f.arena);
+        for (raw, 0..) |l, i| {
+            const gone = i >= dropped.start and i < dropped.end and isSeparatorLine(l);
+            if (!gone) try text.appendSlice(f.arena, l);
+        }
+        var found: diag.List = .empty;
+        defer found.deinit(f.arena);
+        const without = try spec.parse(f.arena, f.file().path, text.items, &found);
+        return without.separator != null;
     }
 
     /// Writes a section's metadata block in canonical form. `fences` are the
@@ -577,6 +598,17 @@ test "every --- line that would separate nothing goes at once" {
     var f = try formatTest(&one("\r\n---\r\n---\r\n\r\n---\r\nText.\r\n---\r\n"), &.{}, null);
     defer f.deinit();
     try f.expectAfter("specs/t.spec.md", "\r\n\r\nText.\r\n---\r\n");
+}
+
+// specrail: specs/cli/fmt.spec.md § 1.3 Empty context
+// specrail: specs/cli/fmt.spec.md § 4.4 Idempotence
+test "a separator stays when removing it would make a later --- the separator" {
+    // Found by fuzzing: the later --- became the separator, the sections
+    // above it context, and the next run renumbered the rest.
+    const content = "\n---\n# § 1 One\n\nIt MUST work.\n\n---\n\n# § 2 Two\n\nIt MUST work.\n";
+    var f = try formatTest(&one(content), &.{}, null);
+    defer f.deinit();
+    try testing.expectEqual(@as(?[]const u8, null), f.after("specs/t.spec.md"));
 }
 
 // specrail: specs/cli/fmt.spec.md § 1.3 Empty context

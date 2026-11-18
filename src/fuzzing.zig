@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const Smith = std.testing.Smith;
 
 const build_options = @import("build_options");
+const spec = @import("spec.zig");
 
 /// How many seeds each fuzz test starts from, and how many bytes each has.
 const seed_count = 64;
@@ -17,7 +18,12 @@ const seed_len = 512;
 
 /// Pseudo-random seeds, the same on every run, then `extra`, then the input
 /// `zig build test -Dfuzz-input=<path>` names. The fuzzer reads every seed as
-/// its choices, so any bytes make a valid seed.
+/// its choices, so any bytes make a valid seed, but not a useful one: a seed
+/// read back ends a run of choices at its first byte that is not zero, and
+/// takes the smallest value whenever eight bytes do not make one in range.
+/// Half the seeds are therefore mostly zeros with small values among them,
+/// which make files of several lines and vary the choices, and half are
+/// random bytes, which make text of any bytes.
 pub fn seeds(
     arena: Allocator,
     extra: []const []const u8,
@@ -25,9 +31,12 @@ pub fn seeds(
     var prng: std.Random.DefaultPrng = .init(0x5bec_7a11);
     const replay = build_options.fuzz_input != null;
     const out = try arena.alloc([]const u8, seed_count + extra.len + @intFromBool(replay));
-    for (out[0..seed_count]) |*s| {
+    for (out[0..seed_count], 0..) |*s, i| {
         const seed = try arena.alloc(u8, seed_len);
         prng.random().bytes(seed);
+        if (i % 2 == 0) {
+            for (seed) |*b| b.* = if (b.* < 224) 0 else b.* % 16;
+        }
         s.* = seed;
     }
     @memcpy(out[seed_count..][0..extra.len], extra);
@@ -63,7 +72,8 @@ pub fn pick(smith: *Smith, choices: []const []const u8) []const u8 {
 pub const spec_paths = [_][]const u8{ "specs/a.spec.md", "specs/b.spec.md" };
 
 const numbers = [_][]const u8{ "1", "2", "3", "1.1", "1.2", "2.1", "1.1.1", "1.2.1", "0", "1.01" };
-const titles = [_][]const u8{ "One", "Two", "Café 🔑", "Login", "Two  words", "" };
+/// Section titles, among them one that takes several bytes and two units in UTF-16.
+pub const titles = [_][]const u8{ "One", "Two", "Café 🔑", "Login", "Two  words", "" };
 const spaces = [_][]const u8{ " ", " ", " ", "  ", "\t", "" };
 const prose = [_][]const u8{
     "",
@@ -115,10 +125,69 @@ fn heading(smith: *Smith, arena: Allocator, out: *std.ArrayList(u8)) Allocator.E
     if (smith.boolWeighted(7, 1)) try out.appendSlice(arena, pick(smith, &spaces));
 }
 
-/// A spec file: headings, metadata blocks, prose and the odd line of any
-/// bytes, ending lines the same way throughout.
+/// The numbers and titles that are valid in a heading.
+const valid_numbers = numbers[0..8];
+const valid_titles = titles[0..5];
+const statuses = [_][]const u8{ "planned", "in-progress", "done" };
+
+/// A section in reference form that parses, for a dependency entry.
+fn validForm(smith: *Smith, arena: Allocator) Allocator.Error![]const u8 {
+    const path = pick(smith, &spec_paths);
+    const parts = .{ path, pick(smith, valid_numbers), pick(smith, valid_titles) };
+    return arena.print("{s} § {s} {s}", parts);
+}
+
+/// A metadata block that parses: a status, an owner, a due date or a
+/// dependency entry.
+fn tidyBlock(
+    smith: *Smith,
+    arena: Allocator,
+    out: *std.ArrayList(u8),
+    newline: []const u8,
+) Allocator.Error!void {
+    try out.print(arena, "```toml{s}", .{newline});
+    switch (smith.valueRangeAtMost(u8, 0, 3)) {
+        0 => try out.print(arena, "status = \"{s}\"{s}", .{ pick(smith, &statuses), newline }),
+        1 => try out.print(arena, "x-owner = \"a\"{s}", .{newline}),
+        2 => try out.print(arena, "due = 2027-01-01{s}", .{newline}),
+        else => {
+            const entry = try validForm(smith, arena);
+            try out.print(arena, "dependencies = [\"{s}\"]{s}", .{ entry, newline });
+        },
+    }
+    try out.print(arena, "```{s}", .{newline});
+}
+
+/// A spec file as a person writes it: maybe context and a separator, then
+/// sections numbered in order, each at most one level deeper than the one
+/// before it, with prose and sometimes a metadata block.
+fn tidySpecText(smith: *Smith, arena: Allocator, newline: []const u8) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(arena);
+    if (smith.value(bool)) {
+        try out.print(arena, "Context.{s}{s}---{s}{s}", .{ newline, newline, newline, newline });
+    }
+    var numbering: spec.Numbering = .{};
+    var level: u8 = 0;
+    // The fuzzer ends the file; a seed ends it when its bytes run out.
+    while (!smith.eosWeightedSimple(5, 1)) {
+        level = smith.valueRangeAtMost(u8, 1, @min(level + 1, 4));
+        const number = try numbering.next(arena, level);
+        try out.appendNTimes(arena, '#', level);
+        try out.print(arena, " § {s} {s}{s}", .{ number, pick(smith, valid_titles), newline });
+        if (smith.boolWeighted(2, 1)) try tidyBlock(smith, arena, &out, newline);
+        try out.print(arena, "{s}It MUST work.{s}{s}", .{ newline, newline, newline });
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// A spec file: half the time one as a person writes it, and otherwise
+/// headings, metadata blocks, prose and the odd line of any bytes, in any
+/// order. Either way, lines end the same way throughout.
 pub fn specText(smith: *Smith, arena: Allocator) Allocator.Error![]const u8 {
     const newline = if (smith.boolWeighted(7, 1)) "\n" else "\r\n";
+    // A seed read back takes the smallest value, false, so seeds make tidy files.
+    if (!smith.value(bool)) return tidySpecText(smith, arena, newline);
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(arena);
     var buf: [24]u8 = undefined;

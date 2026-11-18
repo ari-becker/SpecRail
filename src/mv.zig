@@ -257,11 +257,14 @@ fn moveSection(e: *Editor, from: refs.Form, to: refs.Form) Error!void {
     if (same_file and std.mem.eql(u8, from.number, to.number)) {
         return retitle(e, source, to.title);
     }
-    if (same_file and edit.isBelow(to.number, from.number)) {
+    var src = try e.outline(source.file);
+    // The destination number counts sections by position, so it is compared
+    // with the number the source's position gives it, not the one written.
+    const source_number = (try src.positions(e.ctx.arena))[source.index];
+    if (same_file and edit.isBelow(to.number, source_number)) {
         return e.stop(2, "§ {s} lies inside the subtree being moved", .{to.number});
     }
     const di = try destination(e, to);
-    var src = try e.outline(source.file);
     var other: ?Outline = if (same_file)
         null
     else if (di) |d|
@@ -288,7 +291,7 @@ fn placeSection(e: *Editor, from: refs.Form, near: refs.Form, placement: Placeme
     };
     const target = try e.find(near, role);
     const same_file = source.file == target.file;
-    const itself = target.index == source.index or edit.isBelow(near.number, from.number);
+    const itself = target.index == source.index or e.contains(source, target);
     if (same_file and itself) {
         return e.stop(2, "§ {s} cannot go next to itself or a section inside it", .{from.number});
     }
@@ -792,6 +795,67 @@ test "--before and --after put a section next to another, at its level" {
     try expectChecks(&s);
 }
 
+// specrail: specs/cli/mv.spec.md § 4.1 Unparseable files
+test "a dependency entry mv cannot rewrite stops it, rather than going stale" {
+    // Found by fuzzing: the entry sat in a metadata block that is never
+    // closed, which check reads and mv skipped.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const entry = "dependencies = [\"" ++ login_path ++ " § 1.2 Google\"]\n";
+    const broken = "# § 1 Waits too\n```toml\n" ++ entry;
+    try s.write("specs/broken.spec.md", broken);
+    const google = login_path ++ " § 1.2 Google";
+    const retitled = try runMv(&s, &.{ google, login_path ++ " § 1.2 Gmail" });
+    try testing.expectEqual(@as(u8, 1), retitled.code);
+    try sandbox.expectContains(retitled.stderr, "specs/broken.spec.md has errors");
+    const moved = try runMv(&s, &.{ login_path, "specs/identity/login.spec.md" });
+    try testing.expectEqual(@as(u8, 1), moved.code);
+    try testing.expectEqualStrings(broken, try s.read("specs/broken.spec.md"));
+    try expectUnchanged(&s);
+}
+
+// specrail: specs/cli/mv.spec.md § 4.1 Unparseable files
+test "a spec file that ends inside an unclosed code block is not rewritten" {
+    // Found by fuzzing: the section that held the open block took it along,
+    // and the sections after it in its new file became code.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const open = "# § 1 Open\n\n```zig\nconst a = 1;\n";
+    try s.write("specs/open.spec.md", open);
+    const open_section = "specs/open.spec.md § 1 Open";
+    const logout = login_path ++ " § 2 Logout";
+    const out = try runMv(&s, &.{ open_section, "--before", logout });
+    try testing.expectEqual(@as(u8, 1), out.code);
+    try sandbox.expectContains(out.stderr, "this code block is never closed");
+    const in = try runMv(&s, &.{ logout, "--after", open_section });
+    try testing.expectEqual(@as(u8, 1), in.code);
+    try testing.expectEqualStrings(open, try s.read("specs/open.spec.md"));
+    try expectUnchanged(&s);
+}
+
+// specrail: specs/cli/mv.spec.md § 2.6 Valid destination
+// specrail: specs/cli/mv.spec.md § 2.9 Next to itself
+test "a section is inside another by its heading level, whatever its number" {
+    // Found by fuzzing, in swap: in a file numbered out of order, comparing
+    // numbers took a section inside another for one beside it.
+    var s = try sandbox.Sandbox.init();
+    defer s.deinit();
+    try authProject(&s);
+    const odd = "# § 5 One\n\nIt MUST work.\n\n## § 1.1.1 Two\n\nIt MUST work.\n";
+    try s.write("specs/odd.spec.md", odd);
+    const one = "specs/odd.spec.md § 5 One";
+    const next_to = try runMv(&s, &.{ one, "--after", "specs/odd.spec.md § 1.1.1 Two" });
+    try testing.expectEqual(@as(u8, 2), next_to.code);
+    try sandbox.expectContains(next_to.stderr, "cannot go next to itself or a section inside it");
+    // By position, § 5 One is § 1, so § 1.2 lies inside it.
+    const inside = try runMv(&s, &.{ one, "specs/odd.spec.md § 1.2 One" });
+    try testing.expectEqual(@as(u8, 2), inside.code);
+    try sandbox.expectContains(inside.stderr, "lies inside the subtree being moved");
+    try testing.expectEqualStrings(odd, try s.read("specs/odd.spec.md"));
+}
+
 // specrail: specs/cli/mv.spec.md § 2.9 Next to itself
 test "a section cannot go next to itself or a section inside it" {
     var s = try sandbox.Sandbox.init();
@@ -919,4 +983,172 @@ test "when a file cannot be written, mv changes nothing and cleans up" {
     try expectUnchanged(&s);
     try testing.expect(!s.exists("specs/auth/.login.spec.md.0.specrail-tmp"));
     try testing.expect(s.exists("src/.t.zig.1.specrail-tmp/blocker"));
+}
+
+// ---------------------------------------------------------------- fuzz tests
+
+const fuzzing = @import("fuzzing.zig");
+const fuzzed = edit.fuzzed;
+
+/// The number after `number` among its siblings: `1.3` after `1.2`.
+fn nextSibling(arena: std.mem.Allocator, number: []const u8) ![]const u8 {
+    const dot = std.mem.findScalarLast(u8, number, '.');
+    const last = number[if (dot) |d| d + 1 else 0..];
+    const n = (std.fmt.parseInt(u32, last, 10) catch 0) + 1;
+    const parent = if (dot) |d| number[0 .. d + 1] else "";
+    return arena.print("{s}{d}", .{ parent, n });
+}
+
+/// A destination for a section: in either spec file or a new one, under a
+/// section there or after one, often the next free number, with the
+/// section's title or another.
+fn madeUpDestination(
+    smith: *testing.Smith,
+    arena: std.mem.Allocator,
+    e: *const Editor,
+    from: refs.Form,
+) ![]const u8 {
+    const paths = fuzzing.spec_paths ++ [_][]const u8{"specs/c.spec.md"};
+    const path = fuzzing.pick(smith, &paths);
+    var number: []const u8 = try arena.print("{d}", .{smith.valueRangeAtMost(u8, 1, 4)});
+    if (e.by_path.get(path)) |fi| {
+        const sections = e.specs[fi].sections;
+        if (sections.len > 0 and smith.boolWeighted(1, 4)) {
+            const near = sections[smith.index(sections.len)].number;
+            number = if (smith.value(bool))
+                try arena.print("{s}.1", .{near})
+            else
+                try nextSibling(arena, near);
+        }
+    }
+    const title = if (smith.value(bool)) from.title else fuzzing.pick(smith, &fuzzing.titles);
+    return arena.print("{s} {s} {s} {s}", .{ path, refs.section_sign, number, title });
+}
+
+/// A request to move or retitle the section `from`.
+fn madeUpRequest(
+    smith: *testing.Smith,
+    arena: std.mem.Allocator,
+    e: *const Editor,
+    from: []const u8,
+) !?Request {
+    const form = switch (refs.parseForm(from, .required)) {
+        .ok => |f| f,
+        .err => return error.TestUnexpectedResult,
+    };
+    switch (smith.valueRangeAtMost(u8, 0, 3)) {
+        0 => {
+            const title = fuzzing.pick(smith, &fuzzing.titles);
+            const parts = .{ form.path, refs.section_sign, form.number, title };
+            return .{ .from = from, .target = try arena.print("{s} {s} {s} {s}", parts) };
+        },
+        1 => return .{ .from = from, .target = try madeUpDestination(smith, arena, e, form) },
+        else => {
+            const near = (try fuzzed.pickSection(smith, arena, e)) orelse return null;
+            const placement: Placement = if (smith.value(bool)) .before else .after;
+            return .{ .from = from, .target = near, .placement = placement };
+        },
+    }
+}
+
+/// Wherever a section is moved, retitled or placed, every reference and
+/// dependency entry that named a section exactly still does, no prose or
+/// title is lost, and the section is where mv says, in a file numbered in
+/// order.
+fn moveAnySection(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const before = try fuzzed.madeUp(smith, arena);
+    var e = try Editor.fromProject(try fuzzed.context(arena), "mv", before);
+    const from = (try fuzzed.pickSection(smith, arena, &e)) orelse return;
+    const request = (try madeUpRequest(smith, arena, &e, from)) orelse return;
+    plan(&e, request) catch |err| switch (err) {
+        // A refusal changes nothing; it only has to say so.
+        error.Stopped => return testing.expect(e.status != 0),
+        else => |other| return other,
+    };
+    const after = try fuzzed.applied(arena, &e);
+    errdefer {
+        const option = if (request.placement) |p| switch (p) {
+            .after => "--after ",
+            .before => "--before ",
+        } else "";
+        std.debug.print("mv '{s}' {s}'{s}'\n", .{ request.from, option, request.target });
+        fuzzed.show(before, after);
+    }
+    try fuzzed.expectKept(arena, before, after);
+    try testing.expectEqual(@as(usize, 1), e.addresses.items.len);
+    const address = e.addresses.items[0];
+    try fuzzed.expectLanded(arena, after, address);
+    // The titles are those before, with the section's own as it is now.
+    const old_title = refs.parseForm(from, .required).ok.title;
+    const new_title = refs.parseForm(address, .required).ok.title;
+    var expected: std.ArrayList([]const u8) = .empty;
+    errdefer expected.deinit(arena);
+    var dropped = false;
+    for (try fuzzed.titles(arena, before)) |t| {
+        if (!dropped and std.mem.eql(u8, t, old_title)) {
+            dropped = true;
+            continue;
+        }
+        try expected.append(arena, t);
+    }
+    try expected.append(arena, new_title);
+    std.mem.sort([]const u8, expected.items, {}, lessThanText);
+    const got = try fuzzed.titles(arena, after);
+    try testing.expectEqual(expected.items.len, got.len);
+    for (expected.items, got) |x, g| try testing.expectEqualStrings(x, g);
+}
+
+fn lessThanText(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+// specrail: specs/cli/mv.spec.md § 2.2 Retitle
+// specrail: specs/cli/mv.spec.md § 2.3 Move a section
+// specrail: specs/cli/mv.spec.md § 2.4 Whole subtree
+// specrail: specs/cli/mv.spec.md § 2.8 Before and after
+// specrail: specs/cli/mv.spec.md § 4.2 Report
+test "fuzz: a section moved anywhere keeps what names it, and lands where mv says" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, moveAnySection, .{ .corpus = corpus });
+}
+
+/// Wherever a spec file is moved, every reference and dependency entry that
+/// named a section exactly still does, at the new path.
+fn moveAnySpecFile(_: void, smith: *testing.Smith) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const before = try fuzzed.madeUp(smith, arena);
+    var e = try Editor.fromProject(try fuzzed.context(arena), "mv", before);
+    // The project is in memory, so a destination is new when no file has it.
+    const targets = [_][]const u8{ "specs/c.spec.md", "specs/deep/a.spec.md", "specs/a/b.spec.md" };
+    const old = fuzzing.pick(smith, &fuzzing.spec_paths);
+    const new = fuzzing.pick(smith, &targets);
+    plan(&e, .{ .from = old, .target = new }) catch |err| switch (err) {
+        error.Stopped => return testing.expect(e.status != 0),
+        else => |other| return other,
+    };
+    const after = try fuzzed.applied(arena, &e);
+    errdefer {
+        std.debug.print("mv '{s}' '{s}'\n", .{ old, new });
+        fuzzed.show(before, after);
+    }
+    try fuzzed.expectKept(arena, before, after);
+    const titles_before = try fuzzed.titles(arena, before);
+    const titles_after = try fuzzed.titles(arena, after);
+    try testing.expectEqual(titles_before.len, titles_after.len);
+    for (after.spec_files) |f| try testing.expect(!std.mem.eql(u8, f.path, old));
+}
+
+// specrail: specs/cli/mv.spec.md § 1.1 Move a spec file
+test "fuzz: a spec file moved anywhere keeps what names its sections" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const corpus = try fuzzing.seeds(arena_state.allocator(), &.{});
+    try testing.fuzz({}, moveAnySpecFile, .{ .corpus = corpus });
 }

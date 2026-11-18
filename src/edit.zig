@@ -119,6 +119,17 @@ fn allBlank(lines: []const []const u8) bool {
     return true;
 }
 
+/// Whether any dependency entry of `file` names something `rw` changes.
+fn namesChange(rw: rewrite.Rewriter, file: *const spec.SpecFile) bool {
+    for (file.sections) |s| {
+        const m = s.metadata orelse continue;
+        for (m.dependencies) |d| {
+            if (rw.replaceFn(rw.context, d.form) != null) return true;
+        }
+    }
+    return false;
+}
+
 /// Whether `number` lies inside the subtree of the section numbered `top`.
 pub fn isBelow(number: []const u8, top: []const u8) bool {
     const prefixed = number.len > top.len and std.mem.startsWith(u8, number, top);
@@ -335,6 +346,15 @@ pub const Editor = struct {
     /// reported, which is exit status 2.
     pub fn open(ctx: *cli.Ctx, command: []const u8) cli.Error!?Editor {
         const proj = (try project.open(ctx)) orelse return null;
+        return try fromProject(ctx, command, proj);
+    }
+
+    /// Parses a project already read, as `open` does once it has read it.
+    pub fn fromProject(
+        ctx: *cli.Ctx,
+        command: []const u8,
+        proj: project.Project,
+    ) Allocator.Error!Editor {
         const n = proj.spec_files.len;
         var e: Editor = .{
             .ctx = ctx,
@@ -394,9 +414,12 @@ pub const Editor = struct {
     }
 
     /// Whether the spec file at `index` has a section tree that can be
-    /// rewritten.
+    /// rewritten. A file that ends inside an unclosed code block cannot be:
+    /// a section moved out of it would carry the block along, and one moved
+    /// in after it would be buried in it.
     pub fn rewritable(e: *const Editor, index: usize) bool {
-        return !e.specs[index].broken and !e.specs[index].duplicate;
+        const file = &e.specs[index];
+        return !file.broken and !file.duplicate and file.open_fence == null;
     }
 
     /// The outline of the spec file at `index`.
@@ -448,6 +471,19 @@ pub const Editor = struct {
         }
         const msg = "dangling {s}: {s} has no § {s} and no section titled '{s}'";
         return e.stop(1, msg, .{ role, form.path, form.number, form.title });
+    }
+
+    /// Whether the section at `inner` lies in the subtree of the section at
+    /// `outer`. The heading levels decide, not the numbers, which a file
+    /// numbered out of order does not keep in step with them.
+    pub fn contains(e: *const Editor, outer: Place, inner: Place) bool {
+        if (outer.file != inner.file or inner.index <= outer.index) return false;
+        const sections = e.specs[outer.file].sections;
+        const level = sections[outer.index].level;
+        for (sections[outer.index + 1 .. inner.index + 1]) |s| {
+            if (s.level <= level) return false;
+        }
+        return true;
     }
 
     /// Sets the heading levels of a block of sections so that its first is at
@@ -525,6 +561,12 @@ pub const Editor = struct {
         var found: diag.List = .empty;
         defer found.deinit(arena);
         const file = try spec.parse(arena, path, content, &found);
+        // The rewriting skips a metadata block that is never closed or does
+        // not parse, though check still reads its dependency entries; a file
+        // with one that names a change is refused rather than left stale.
+        if (e.by_path.get(path)) |i| {
+            if (!e.rewritable(i) and namesChange(rw, &file)) return e.refuse(i);
+        }
         const raw = try rewrite.splitLines(arena, content);
         const after = (try rewrite.rewriteDependencies(arena, rw, &file, raw)) orelse content;
         if (std.mem.eql(u8, after, original)) return;
@@ -629,5 +671,233 @@ pub const fixture = struct {
         const t = try s.read("src/t.zig");
         try sandbox.expectContains(t, "// specrail: specs/auth/login.spec.md § 2 Logout\n");
         try sandbox.expectContains(t, "// specrail: specs/other.spec.md § 1 Waits\n");
+    }
+};
+
+/// What the fuzz tests of the commands built on this engine share: a made-up
+/// project held in memory, an editor for it, and the properties every edit
+/// keeps.
+pub const fuzzed = struct {
+    const fmt = @import("fmt.zig");
+    const fuzzing = @import("fuzzing.zig");
+    const testing = std.testing;
+    const ExpectError = error{ TestExpectedEqual, TestUnexpectedResult };
+
+    /// The project root: a directory that does not exist, so that the one
+    /// thing planning asks of the disk, whether a path exists, finds nothing.
+    const root = "/nonexistent/specrail-fuzz";
+
+    /// A command's context, its output kept in memory.
+    pub fn context(arena: Allocator) Allocator.Error!*cli.Ctx {
+        const out = try arena.create(Io.Writer.Allocating);
+        out.* = .init(arena);
+        const err = try arena.create(Io.Writer.Allocating);
+        err.* = .init(arena);
+        const ctx = try arena.create(cli.Ctx);
+        ctx.* = .{
+            .arena = arena,
+            .io = testing.io,
+            .stdout = &out.writer,
+            .stderr = &err.writer,
+            .cwd = root,
+            .now = 20774 * 86400,
+        };
+        return ctx;
+    }
+
+    /// A made-up project: two spec files, and a source file that references
+    /// them.
+    pub fn madeUp(smith: *testing.Smith, arena: Allocator) Allocator.Error!project.Project {
+        const specs = try arena.alloc(project.SourceFile, fuzzing.spec_paths.len);
+        for (specs, fuzzing.spec_paths) |*f, path| {
+            f.* = .{ .path = path, .content = try fuzzing.specText(smith, arena) };
+        }
+        const sources = try arena.alloc(project.SourceFile, 1);
+        sources[0] = .{ .path = "src/t.zig", .content = try fuzzing.sourceText(smith, arena) };
+        return .{
+            .root = root,
+            .config = .{ .spec_root = "specs" },
+            .spec_files = specs,
+            .source_files = sources,
+        };
+    }
+
+    /// A section of a spec file the editor can rewrite, in reference form;
+    /// null when there is none.
+    pub fn pickSection(
+        smith: *testing.Smith,
+        arena: Allocator,
+        e: *const Editor,
+    ) Allocator.Error!?[]const u8 {
+        const fi = smith.index(e.specs.len);
+        const file = &e.specs[fi];
+        if (!e.rewritable(fi) or file.sections.len == 0) return null;
+        const s = file.sections[smith.index(file.sections.len)];
+        const parts = .{ file.path, refs.section_sign, s.number, s.title };
+        return try arena.print("{s} {s} {s} {s}", parts);
+    }
+
+    /// The project once the changes `e` planned are made.
+    pub fn applied(arena: Allocator, e: *const Editor) Allocator.Error!project.Project {
+        var specs: std.ArrayList(project.SourceFile) = .empty;
+        errdefer specs.deinit(arena);
+        var sources: std.ArrayList(project.SourceFile) = .empty;
+        errdefer sources.deinit(arena);
+        for (e.proj.spec_files) |f| {
+            const path = try e.pending.finalPath(f.path);
+            try specs.append(arena, .{ .path = path, .content = f.content });
+        }
+        for (e.proj.source_files) |f| {
+            const path = try e.pending.finalPath(f.path);
+            try sources.append(arena, .{ .path = path, .content = f.content });
+        }
+        writes: for (e.pending.writes.items) |w| {
+            for ([_]*std.ArrayList(project.SourceFile){ &specs, &sources }) |list| {
+                files: for (list.items) |*f| {
+                    if (!std.mem.eql(u8, f.path, w.path)) continue :files;
+                    f.content = w.content;
+                    continue :writes;
+                }
+            }
+            // Only spec files are created.
+            try specs.append(arena, .{ .path = w.path, .content = w.content });
+        }
+        return .{
+            .root = root,
+            .config = e.proj.config,
+            .spec_files = try specs.toOwnedSlice(arena),
+            .source_files = try sources.toOwnedSlice(arena),
+        };
+    }
+
+    fn parsed(arena: Allocator, proj: project.Project) Allocator.Error![]spec.SpecFile {
+        var found: diag.List = .empty;
+        defer found.deinit(arena);
+        const out = try arena.alloc(spec.SpecFile, proj.spec_files.len);
+        for (proj.spec_files, out) |f, *file| {
+            file.* = try spec.parse(arena, f.path, f.content, &found);
+        }
+        return out;
+    }
+
+    /// Whether `form` names a section of `specs` exactly.
+    fn namesExactly(specs: []const spec.SpecFile, form: refs.Form) bool {
+        for (specs) |file| {
+            if (!std.mem.eql(u8, file.path, form.path)) continue;
+            for (file.sections) |s| {
+                const same_title = std.mem.eql(u8, s.title, form.title);
+                if (same_title and std.mem.eql(u8, s.number, form.number)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// How many reference lines and dependency entries in `proj` name a
+    /// section exactly.
+    pub fn exactNames(arena: Allocator, proj: project.Project) Allocator.Error!usize {
+        const specs = try parsed(arena, proj);
+        var count: usize = 0;
+        for (proj.source_files) |f| {
+            found: for (try refs.scanText(arena, f.content)) |found| {
+                const form = switch (found.ref.result) {
+                    .ok => |form| form,
+                    .err => continue :found,
+                };
+                if (namesExactly(specs, form)) count += 1;
+            }
+        }
+        for (specs) |file| {
+            sections: for (file.sections) |s| {
+                const m = s.metadata orelse continue :sections;
+                for (m.dependencies) |d| {
+                    if (namesExactly(specs, d.form)) count += 1;
+                }
+            }
+        }
+        return count;
+    }
+
+    fn lessThanText(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.order(u8, a, b) == .lt;
+    }
+
+    /// Every section title in `proj`, sorted, to compare as a multiset.
+    pub fn titles(arena: Allocator, proj: project.Project) Allocator.Error![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        errdefer out.deinit(arena);
+        for (try parsed(arena, proj)) |file| {
+            for (file.sections) |s| try out.append(arena, s.title);
+        }
+        std.mem.sort([]const u8, out.items, {}, lessThanText);
+        return out.toOwnedSlice(arena);
+    }
+
+    /// Every heading in `proj`, file by file: its path, level and title.
+    pub fn outlineOf(arena: Allocator, proj: project.Project) Allocator.Error![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(arena);
+        for (try parsed(arena, proj)) |file| {
+            for (file.sections) |s| {
+                try out.print(arena, "{s} {d} {s}\n", .{ file.path, s.level, s.title });
+            }
+        }
+        return out.toOwnedSlice(arena);
+    }
+
+    /// How many non-blank lines the spec files of `proj` hold, other than
+    /// headings and separators: the prose, metadata and context that an edit
+    /// moves, and never adds or drops.
+    pub fn proseLines(arena: Allocator, proj: project.Project) Allocator.Error!usize {
+        var count: usize = 0;
+        for (proj.spec_files, try parsed(arena, proj)) |f, file| {
+            var lines = std.mem.splitScalar(u8, f.content, '\n');
+            while (lines.next()) |l| {
+                if (!isBlank(l)) count += 1;
+            }
+            count -= file.sections.len + @intFromBool(file.separator != null);
+        }
+        return count;
+    }
+
+    /// Expects what every edit keeps: the references and dependency entries
+    /// that named a section exactly still do, and no prose is lost.
+    pub fn expectKept(
+        arena: Allocator,
+        before: project.Project,
+        after: project.Project,
+    ) (Allocator.Error || ExpectError)!void {
+        try testing.expect(try exactNames(arena, after) >= try exactNames(arena, before));
+        try testing.expectEqual(try proseLines(arena, before), try proseLines(arena, after));
+    }
+
+    /// Expects `address` to name a section of `proj` exactly, and that
+    /// section's spec file to be numbered in order and rewritable.
+    pub fn expectLanded(
+        arena: Allocator,
+        proj: project.Project,
+        address: []const u8,
+    ) (Allocator.Error || ExpectError)!void {
+        const form = switch (refs.parseForm(address, .required)) {
+            .ok => |f| f,
+            .err => return error.TestUnexpectedResult,
+        };
+        const specs = try parsed(arena, proj);
+        try testing.expect(namesExactly(specs, form));
+        for (specs) |*file| {
+            if (!std.mem.eql(u8, file.path, form.path)) continue;
+            try testing.expect(!file.broken);
+            try testing.expect(!file.duplicate);
+            try testing.expect(!try fmt.outOfOrder(arena, file));
+        }
+    }
+
+    /// Shows the project before and after an edit, for a failure.
+    pub fn show(before: project.Project, after: project.Project) void {
+        for ([_]project.Project{ before, after }, [_][]const u8{ "before", "after" }) |p, when| {
+            const all = [_][]const project.SourceFile{ p.spec_files, p.source_files };
+            for (all) |list| {
+                for (list) |f| std.debug.print("--- {s} {s}\n{s}\n", .{ when, f.path, f.content });
+            }
+        }
     }
 };
