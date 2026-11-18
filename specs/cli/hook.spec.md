@@ -17,10 +17,22 @@ if is_provider_merge; then exit 0; fi
 exec specrail hook pre-receive
 ```
 
-The same check runs on the client as a pre-push hook, so an agent learns
-before pushing that a push to the claim branch would be rejected. The client
-hook is a convenience, since `git push --no-verify` skips it; the server hook
-is the enforcement. Hosted providers that do not run custom server hooks can
+The same check can run on the client, from a pre-push hook script, so that an
+agent learns before pushing that a push to the claim branch would be
+rejected. As on the server, the script decides when to ask. People who push
+other work to the claim branch should not be stopped, so a script might check
+only agents, which name themselves in `SPECRAIL_ASSIGNEE`:
+
+```sh
+#!/bin/sh
+# Client-side pre-push hook: agents push only claims to the claim branch.
+if [ -n "$SPECRAIL_ASSIGNEE" ]; then
+  exec specrail hook pre-push "$@"
+fi
+```
+
+The client hook is a convenience, since `git push --no-verify` skips it; the
+server hook is the enforcement. Hosted providers that do not run custom server hooks can
 get the same effect from a bot that is allowed to bypass branch protection:
 agents push claims to a side branch, and the bot runs the same check and
 fast-forwards the claim branch.
@@ -28,9 +40,6 @@ fast-forwards the claim branch.
 ---
 
 # § 1 Claim commits
-```toml
-status = "planned"
-```
 
 ## § 1.1 Definition
 
@@ -54,9 +63,6 @@ claim a section whose ancestor sections or descendants are held that way by a
 different assignee.
 
 # § 2 Server side
-```toml
-status = "planned"
-```
 
 ## § 2.1 Input
 
@@ -79,7 +85,8 @@ expiry or takeovers.
 
 It MUST run in a bare repository without a project root, reading
 `specrail.toml` and spec files from git objects, and MUST decide whether a ref
-is the claim branch using the `specrail.toml` in the ref's old tip.
+is the claim branch using the `specrail.toml` at the root of the ref's old
+tip, or of its new tip when the update creates the ref.
 
 ## § 2.5 Rejection messages
 
@@ -88,9 +95,6 @@ offending commit and the change that disqualifies it. It MUST exit with
 status 1 when it rejects any update, and 0 otherwise.
 
 # § 3 Client side
-```toml
-status = "planned"
-```
 
 ## § 3.1 Input
 
@@ -103,10 +107,3 @@ claim branch when pushing to the claim remote.
 
 When the remote's tip of the claim branch is not present locally, it MUST
 reject the push and suggest fetching first.
-
-## § 3.3 Install
-
-`specrail hook install` MUST install a pre-push hook that runs
-`specrail hook pre-push` in the hooks directory git uses, honoring
-`core.hooksPath`. It MUST change nothing and exit with status 2 when a
-different pre-push hook already exists there.

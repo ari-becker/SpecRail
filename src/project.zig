@@ -32,9 +32,16 @@ fn readFile(arena: Allocator, io: Io, root: []const u8, path: []const u8) !?[]co
     };
 }
 
-/// Opens the project around the working directory. On failure, prints the
-/// reason to stderr and returns null; the command then exits with status 2.
-pub fn open(ctx: *cli.Ctx) cli.Error!?Project {
+/// The project root and its settings.
+pub const Settings = struct {
+    root: []const u8,
+    config: config.Config,
+};
+
+/// Finds the project root and reads `specrail.toml`, without listing files.
+/// When either fails, it prints the reason to stderr and returns null; the
+/// command then exits with status 2.
+pub fn openConfig(ctx: *cli.Ctx) cli.Error!?Settings {
     const arena = ctx.arena;
     const root = (try config.findProjectRoot(arena, ctx.io, ctx.cwd, ctx.root_ceiling)) orelse {
         try ctx.stderr.print(
@@ -55,6 +62,16 @@ pub fn open(ctx: *cli.Ctx) cli.Error!?Project {
             return null;
         },
     };
+    return .{ .root = root, .config = cfg };
+}
+
+/// Opens the project around the working directory. On failure, prints the
+/// reason to stderr and returns null; the command then exits with status 2.
+pub fn open(ctx: *cli.Ctx) cli.Error!?Project {
+    const arena = ctx.arena;
+    const settings = (try openConfig(ctx)) orelse return null;
+    const root = settings.root;
+    const cfg = settings.config;
     const listed = switch (try files.list(arena, ctx.io, root, ctx.git_env)) {
         .ok => |l| l,
         .err => |msg| {

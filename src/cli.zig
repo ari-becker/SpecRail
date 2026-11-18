@@ -4,8 +4,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const check = @import("check.zig");
+const claim_command = @import("claim.zig");
 const context = @import("context.zig");
 const fmt_command = @import("fmt.zig");
+const hook_command = @import("hook.zig");
 const init_command = @import("init.zig");
 const mv_command = @import("mv.zig");
 const skill = @import("skill.zig");
@@ -32,6 +34,10 @@ pub const Ctx = struct {
     now: i64,
     /// Environment for git; null inherits ours.
     git_env: ?*const std.process.Environ.Map = null,
+    /// Standard input, for the git hooks that read it.
+    stdin: ?*Io.Reader = null,
+    /// The value of SPECRAIL_ASSIGNEE, if set and not empty.
+    assignee: ?[]const u8 = null,
     /// Where the search for the project root stops; tests use it to stay
     /// inside their sandbox.
     root_ceiling: ?[]const u8 = null,
@@ -62,6 +68,9 @@ pub const commands = [_]Command{
     .{ .name = "fmt", .summary = "Renumber sections, rewrite references, normalize spec files" },
     .{ .name = "mv", .summary = "Move or retitle a section, spec file or directory" },
     .{ .name = "swap", .summary = "Exchange two sections" },
+    .{ .name = "claim", .summary = "Take a section for a limited time" },
+    .{ .name = "release", .summary = "Give up a claim early" },
+    .{ .name = "hook", .summary = "Check pushes to the claim branch, from git hook scripts" },
     .{ .name = "skill", .summary = "Print the agent skill" },
 };
 
@@ -146,6 +155,9 @@ fn runArgs(ctx: *Ctx, argv: []const []const u8) !u8 {
     if (std.mem.eql(u8, cmd, "fmt")) return runFmt(ctx, rest);
     if (std.mem.eql(u8, cmd, "mv")) return runMv(ctx, rest);
     if (std.mem.eql(u8, cmd, "swap")) return runSwap(ctx, rest);
+    if (std.mem.eql(u8, cmd, "claim")) return runClaim(ctx, .claim, rest);
+    if (std.mem.eql(u8, cmd, "release")) return runClaim(ctx, .release, rest);
+    if (std.mem.eql(u8, cmd, "hook")) return runHook(ctx, rest);
     if (std.mem.eql(u8, cmd, "init")) return runInit(ctx, rest);
     if (std.mem.eql(u8, cmd, "skill")) return runSkill(ctx, rest);
     return usageError(ctx, null, "unknown command '{s}'", .{cmd});
@@ -206,6 +218,29 @@ fn runMv(ctx: *Ctx, args: []const []const u8) !u8 {
     }
     // The mv command reads its own options, --before and --after.
     return mv_command.run(ctx, args);
+}
+
+fn runClaim(ctx: *Ctx, command: claim_command.Command, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(switch (command) {
+                .claim => claim_command.claim_usage,
+                .release => claim_command.release_usage,
+            });
+            return 0;
+        }
+    }
+    return claim_command.run(ctx, command, args);
+}
+
+fn runHook(ctx: *Ctx, args: []const []const u8) !u8 {
+    for (args) |a| {
+        if (isHelp(a)) {
+            try ctx.stdout.writeAll(hook_command.usage);
+            return 0;
+        }
+    }
+    return hook_command.run(ctx, args);
 }
 
 fn runSwap(ctx: *Ctx, args: []const []const u8) !u8 {

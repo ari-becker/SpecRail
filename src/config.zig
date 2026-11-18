@@ -75,8 +75,29 @@ pub fn normalizeDir(s: []const u8) ?[]const u8 {
     return t;
 }
 
-/// Parses the text of `specrail.toml` for the project at `root`.
+/// Parses the text of `specrail.toml` for the project at `root`, and checks
+/// that the spec root is a directory there.
 pub fn parse(arena: Allocator, io: Io, root: []const u8, text: []const u8) Allocator.Error!Result {
+    const cfg = switch (try parseText(arena, text)) {
+        .ok => |c| c,
+        .err => |msg| return .{ .err = msg },
+    };
+    const abs = if (cfg.spec_root.len == 0)
+        root
+    else
+        try std.Io.Dir.path.join(arena, &.{ root, cfg.spec_root });
+    const st = Io.Dir.cwd().statFile(io, abs, .{}) catch {
+        return fail(arena, " error: spec_root '{s}' does not exist", .{cfg.spec_root});
+    };
+    if (st.kind != .directory) {
+        return fail(arena, " error: spec_root '{s}' is not a directory", .{cfg.spec_root});
+    }
+    return .{ .ok = cfg };
+}
+
+/// Parses the text of `specrail.toml` without looking at the disk, as for one
+/// read from a git object.
+pub fn parseText(arena: Allocator, text: []const u8) Allocator.Error!Result {
     const doc = switch (try toml.parse(arena, text)) {
         .ok => |d| d,
         .err => |e| return fail(arena, "{d}:{d}: error: {s}", .{ e.line, e.column, e.message }),
@@ -92,16 +113,6 @@ pub fn parse(arena: Allocator, io: Io, root: []const u8, text: []const u8) Alloc
                 "such as \"specs\"",
             .{},
         );
-    }
-    const abs = if (cfg.spec_root.len == 0)
-        root
-    else
-        try std.Io.Dir.path.join(arena, &.{ root, cfg.spec_root });
-    const st = Io.Dir.cwd().statFile(io, abs, .{}) catch {
-        return fail(arena, " error: spec_root '{s}' does not exist", .{cfg.spec_root});
-    };
-    if (st.kind != .directory) {
-        return fail(arena, " error: spec_root '{s}' is not a directory", .{cfg.spec_root});
     }
     return .{ .ok = cfg };
 }

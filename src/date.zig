@@ -19,7 +19,36 @@ pub const Date = struct {
         const doe: i64 = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
         return era * 146097 + doe - 719468;
     }
+
+    /// The date `days` days after 1970-01-01, the inverse of `days`.
+    pub fn fromDays(days_since: i64) Date {
+        const z = days_since + 719468;
+        const era = @divFloor(z, 146097);
+        const doe = z - era * 146097;
+        const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) -
+            @divFloor(doe, 146096), 365);
+        const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+        const mp = @divFloor(5 * doy + 2, 153);
+        const day = doy - @divFloor(153 * mp + 2, 5) + 1;
+        const month = if (mp < 10) mp + 3 else mp - 9;
+        const year = yoe + era * 400 + @as(i64, if (month <= 2) 1 else 0);
+        return .{ .year = @intCast(year), .month = @intCast(month), .day = @intCast(day) };
+    }
 };
+
+/// `seconds` since the epoch as an RFC 3339 date-time in UTC, such as
+/// `2026-11-17T16:00:00Z`.
+pub fn formatDateTime(buf: *[20]u8, seconds: i64) []const u8 {
+    const d = Date.fromDays(@divFloor(seconds, 86400));
+    const in_day: u64 = @intCast(@mod(seconds, 86400));
+    // Years before 1 do not occur in claims, and a signed year would print a sign.
+    const year: u32 = @intCast(@max(d.year, 0));
+    const hours = @divFloor(in_day, 3600);
+    const minutes = @divFloor(in_day, 60) % 60;
+    const parts = .{ year, d.month, d.day, hours, minutes, in_day % 60 };
+    const fmt = "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z";
+    return std.mem.print(buf, fmt, parts) catch buf;
+}
 
 fn isLeap(y: i32) bool {
     return (@mod(y, 4) == 0 and @mod(y, 100) != 0) or @mod(y, 400) == 0;
@@ -135,4 +164,17 @@ test "a due date is overdue from noon UTC on the following day" {
     const noon_next_day = (due.days() + 1) * 86400 + 12 * 3600;
     try std.testing.expect(!isOverdue(due, noon_next_day - 1));
     try std.testing.expect(isOverdue(due, noon_next_day));
+}
+
+test "epoch seconds format as RFC 3339 date-times in UTC" {
+    var buf: [20]u8 = undefined;
+    const now = 20774 * 86400 + 16 * 3600 + 5 * 60 + 9;
+    try std.testing.expectEqualStrings("2026-11-17T16:05:09Z", formatDateTime(&buf, now));
+    try std.testing.expectEqualStrings("1970-01-01T00:00:00Z", formatDateTime(&buf, 0));
+    const leap = parseOffsetDateTime("2028-02-29T23:59:59Z").ok;
+    try std.testing.expectEqualStrings("2028-02-29T23:59:59Z", formatDateTime(&buf, leap));
+    for ([_]i64{ -1, 0, 59, 10957, 20774, 2932896 }) |days_since| {
+        const d = Date.fromDays(days_since);
+        try std.testing.expectEqual(days_since, d.days());
+    }
 }

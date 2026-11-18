@@ -26,9 +26,6 @@ cooperating agents, not abuse.
 ---
 
 # § 1 Claiming
-```toml
-status = "planned"
-```
 
 ## § 1.1 Claim commit
 
@@ -101,9 +98,6 @@ and the claim's expiry, so the agent can start its work branch from that
 commit. claim MUST print its errors to stderr.
 
 # § 2 Releasing
-```toml
-status = "planned"
-```
 
 Release is for giving up early. Finished work removes its claim in the change
 that finishes it, without a separate commit.

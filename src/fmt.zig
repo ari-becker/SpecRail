@@ -109,10 +109,18 @@ fn positions(arena: Allocator, file: *const spec.SpecFile) Allocator.Error![]con
     return out;
 }
 
-/// Keys whose values fmt rewrites. Any other key keeps its value as written.
-const known_keys = [_][]const u8{ "status", "due", "assigned", "assigned-until", "dependencies" };
+/// Keys whose values fmt rewrites, in the order fmt writes them. Any other key
+/// keeps its value as written.
+pub const known_keys = [_][]const u8{
+    "status",
+    "due",
+    "assigned",
+    "assigned-until",
+    "dependencies",
+};
 
-fn isKnown(key: []const u8) bool {
+/// Whether fmt knows `key`, rather than it being an extension key.
+pub fn isKnown(key: []const u8) bool {
     for (known_keys) |k| {
         if (std.mem.eql(u8, k, key)) return true;
     }

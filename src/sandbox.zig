@@ -7,24 +7,39 @@ const testing = std.testing;
 const cli = @import("cli.zig");
 
 const Dir = std.Io.Dir;
-const GitError = std.process.RunError || error{GitFailed};
-const WriteError = Dir.CreateDirPathError || Dir.WriteFileError;
+/// What running git in a sandbox can fail with.
+pub const GitError = std.process.RunError || error{GitFailed};
+/// What writing a file in a sandbox can fail with.
+pub const WriteError = Dir.CreateDirPathError || Dir.WriteFileError;
 
 /// A throwaway git repository with a specrail project in it.
 pub const Sandbox = struct {
     tmp: testing.TmpDir,
     arena_state: std.heap.ArenaAllocator,
     root: []const u8,
+    /// The environment git runs with: no global or system configuration, so
+    /// that tests never use the developer's settings, such as commit signing.
+    env: std.process.Environ.Map,
 
-    /// A fresh sandbox: an empty git repository in a temporary directory.
+    /// A fresh sandbox: an empty git repository in a temporary directory, with
+    /// a committer identity of its own.
     pub fn init() (Dir.RealPathFileAllocError || GitError)!Sandbox {
         var s: Sandbox = .{
             .tmp = testing.tmpDir(.{}),
             .arena_state = .init(testing.allocator),
             .root = undefined,
+            .env = undefined,
         };
-        s.root = try s.tmp.dir.realPathFileAlloc(testing.io, ".", s.arena_state.allocator());
-        try s.git(&.{ "git", "init", "-q" });
+        const arena = s.arena_state.allocator();
+        s.root = try s.tmp.dir.realPathFileAlloc(testing.io, ".", arena);
+        s.env = .init(arena);
+        try s.env.put("PATH", testing.environ.getPosix("PATH") orelse "/usr/bin:/bin");
+        try s.env.put("HOME", "/nonexistent/specrail-sandbox");
+        try s.env.put("GIT_CONFIG_NOSYSTEM", "1");
+        try s.env.put("GIT_CONFIG_GLOBAL", "/dev/null");
+        try s.git(&.{ "git", "init", "-q", "-b", "main" });
+        try s.git(&.{ "git", "config", "user.name", "Sandbox" });
+        try s.git(&.{ "git", "config", "user.email", "sandbox@example.invalid" });
         return s;
     }
 
@@ -36,12 +51,34 @@ pub const Sandbox = struct {
 
     /// Runs a git command in the sandbox, failing on a non-zero exit.
     pub fn git(s: *Sandbox, argv: []const []const u8) GitError!void {
+        _ = try s.gitOutput(argv);
+    }
+
+    /// Runs a git command in the sandbox and returns what it printed, without
+    /// surrounding whitespace, failing on a non-zero exit.
+    pub fn gitOutput(s: *Sandbox, argv: []const []const u8) GitError![]const u8 {
+        return std.mem.trim(u8, try s.gitRaw(argv), " \t\r\n");
+    }
+
+    /// Runs a git command in the sandbox and returns what it printed, byte for
+    /// byte, failing on a non-zero exit.
+    pub fn gitRaw(s: *Sandbox, argv: []const []const u8) GitError![]const u8 {
         const r = try std.process.run(
             s.arena_state.allocator(),
             testing.io,
-            .{ .argv = argv, .cwd = .{ .path = s.root } },
+            .{ .argv = argv, .cwd = .{ .path = s.root }, .environ_map = &s.env },
         );
-        if (!r.term.success()) return error.GitFailed;
+        if (!r.term.success()) {
+            std.debug.print("{s} failed: {s}\n", .{ argv[1], r.stderr });
+            return error.GitFailed;
+        }
+        return r.stdout;
+    }
+
+    /// Commits everything in the sandbox.
+    pub fn commitAll(s: *Sandbox, message: []const u8) GitError!void {
+        try s.git(&.{ "git", "add", "-A" });
+        try s.git(&.{ "git", "commit", "-q", "-m", message });
     }
 
     /// Writes a file, creating the directories it needs.
@@ -82,11 +119,17 @@ pub const Sandbox = struct {
     pub fn runIn(s: *Sandbox, sub: []const u8, args: []const []const u8, options: struct {
         tty: bool = false,
         no_color: ?[]const u8 = null,
+        /// Replaces the sandbox's own git environment.
         git_env: ?*const std.process.Environ.Map = null,
+        stdin: []const u8 = "",
+        assignee: ?[]const u8 = null,
+        /// Seconds since the epoch; by default 2026-11-17T00:00:00Z.
+        now: i64 = 20774 * 86400,
     }) std.mem.Allocator.Error!Output {
         const arena = s.arena_state.allocator();
         var out: std.Io.Writer.Allocating = .init(arena);
         var err: std.Io.Writer.Allocating = .init(arena);
+        var in: std.Io.Reader = .fixed(options.stdin);
         var ctx: cli.Ctx = .{
             .arena = arena,
             .io = testing.io,
@@ -95,9 +138,11 @@ pub const Sandbox = struct {
             .stdout_is_tty = options.tty,
             .no_color = options.no_color,
             .cwd = try std.Io.Dir.path.join(arena, &.{ s.root, sub }),
-            .now = 20774 * 86400,
-            .git_env = options.git_env,
+            .now = options.now,
+            .git_env = options.git_env orelse &s.env,
             .root_ceiling = s.root,
+            .stdin = &in,
+            .assignee = options.assignee,
         };
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(arena);
