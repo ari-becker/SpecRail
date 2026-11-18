@@ -5,7 +5,9 @@
 #
 #   tools/fuzz-for.sh <minutes> [<runs of each fuzz test per round>]
 #
-# A failing input stops the rounds, and is saved in the Zig cache as f/crash.
+# A failing input stops the rounds, with exit status 1, and is saved in the
+# Zig cache as f/crash. `zig build test --fuzz` itself exits 0 when a fuzz test
+# fails, so the rounds watch for that file instead.
 #
 # The tests are built ReleaseSafe, which keeps every safety check. Debug
 # builds for x86_64 use Zig's own backend, which does not instrument code for
@@ -22,6 +24,11 @@ case $minutes in
   ;;
 esac
 
+cd "$(dirname "$0")/.."
+crash=${ZIG_LOCAL_CACHE_DIR:-.zig-cache}/f/crash
+stamp=$(mktemp)
+trap 'rm -f "$stamp"' EXIT
+
 began=$(date +%s)
 end=$((began + minutes * 60))
 last=0
@@ -30,8 +37,14 @@ while [ $(($(date +%s) + last)) -lt "$end" ]; do
   round=$((round + 1))
   start=$(date +%s)
   echo "fuzz round $round: $runs runs of each fuzz test"
+  touch "$stamp"
   zig build test -Doptimize=ReleaseSafe --fuzz="$runs"
   last=$(($(date +%s) - start))
   echo "fuzz round $round took ${last}s"
+  if [ -f "$crash" ] && [ -n "$(find "$crash" -newer "$stamp")" ]; then
+    echo "a fuzz test failed in round $round; replay it with:" >&2
+    echo "  zig build test -Dfuzz-input=$crash" >&2
+    exit 1
+  fi
 done
 echo "fuzzed in $round rounds for $((($(date +%s) - began) / 60)) minutes, and found nothing"
