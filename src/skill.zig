@@ -58,6 +58,28 @@ test "the skill covers references and running check" {
     try expectSays("until it passes");
 }
 
+// specrail: specs/cli/skill.spec.md § 1.3 When to claim
+test "the skill says to claim only when SPECRAIL_ASSIGNEE is set or someone asks" {
+    try expectSays("Claim sections only when the `SPECRAIL_ASSIGNEE` environment variable is set");
+    try expectSays("or when your user or operator asks you to");
+    try expectSays("Otherwise, do not claim at all.");
+}
+
+// specrail: specs/cli/skill.spec.md § 1.4 How to claim
+test "the skill says how to claim, renew, finish and give up" {
+    try expectSays("Before working on a section, run\n   `specrail claim '<path>");
+    try expectSays("Start your work branch from the commit that claim printed");
+    try expectSays("Before the claim expires, run the same `specrail claim` again to renew it.");
+    try expectSays("In the change that finishes the work, remove the section's `assigned`");
+    try expectSays("If you give up instead, run\n   `specrail release");
+}
+
+// specrail: specs/cli/skill.spec.md § 1.5 Claims held by others
+test "the skill says what to do about a section someone else holds" {
+    try expectSays("claim fails and names them: choose other work");
+    try expectSays("point the claim out to your user before starting");
+}
+
 // specrail: specs/cli/skill.spec.md § 1.6 Writing specs
 test "the skill explains the spec format" {
     try expectSays("parent file");

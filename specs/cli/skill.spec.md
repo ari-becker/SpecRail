@@ -30,18 +30,12 @@ a section, to add a reference line to each test that verifies a leaf, to run
 order of sections by hand.
 
 ## § 1.3 When to claim
-```toml
-status = "planned"
-```
 
 The skill MUST tell the agent to claim sections only when the
 `SPECRAIL_ASSIGNEE` environment variable is set or its user or operator asks
 it to, and otherwise not to claim at all.
 
 ## § 1.4 How to claim
-```toml
-status = "planned"
-```
 
 For an agent that claims, the skill MUST instruct it to claim a section with
 `specrail claim` before working on it, to start its work branch from the claim
@@ -49,9 +43,6 @@ commit, to renew the claim before it expires, and to remove the claim in the
 change that finishes the work, or with `specrail release` when giving up.
 
 ## § 1.5 Claims held by others
-```toml
-status = "planned"
-```
 
 When a section the agent is about to work on has an unexpired claim by someone
 else, the skill MUST tell an agent that claims to choose other work, and an

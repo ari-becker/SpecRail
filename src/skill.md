@@ -39,13 +39,45 @@ quoted as one argument: it rewrites every reference and dependency entry to
 match. mv never overwrites a section, so a destination number must be the next
 free one under its parent. To put a section among others, use `specrail mv`
 with `--before` or `--after` and the section it should precede or follow; to
-exchange two sections, use `specrail swap`. `specrail check` reports a reference that
-nothing matches as dangling, and one where only the number or only the title
-still matches as stale, and shows the current headings.
+exchange two sections, use `specrail swap`. `specrail check` reports a
+reference that nothing matches as dangling, and one where only the number or
+only the title still matches as stale, and shows the current headings.
 
 To find the tests of a section, search for its address, as in
 `rg 'login.spec.md § 1.1.2'`. If you cannot type `§`, write `%` instead in
 specs and references, and use `.` for it in an `rg` pattern.
+
+## Claims
+
+A claim keeps agents that work from the same specs in parallel from building
+the same thing twice. It is an `assigned` and an `assigned-until` in a
+section's metadata block, pushed straight to the claim branch, which is `main`
+unless `specrail.toml` names another.
+
+Claim sections only when the `SPECRAIL_ASSIGNEE` environment variable is set,
+or when your user or operator asks you to. Otherwise, do not claim at all.
+`specrail claim` and `specrail release` take your name from
+`SPECRAIL_ASSIGNEE`, or from `--as <name>`.
+
+If you claim:
+
+1. Before working on a section, run
+   `specrail claim '<path> § <number> <title>' --for <duration>`, with a
+   duration such as `90m` or `2h`. It prints a commit id and the claim's
+   expiry. If someone else holds the section, or a section above or below it,
+   claim fails and names them: choose other work.
+2. Start your work branch from the commit that claim printed, as in
+   `git switch -c <branch> <commit>`.
+3. Before the claim expires, run the same `specrail claim` again to renew it.
+4. In the change that finishes the work, remove the section's `assigned` and
+   `assigned-until` along with its `status`. If you give up instead, run
+   `specrail release '<path> § <number> <title>'`.
+
+Someone holds a section while its `assigned-until` is in the future, or when
+it has an `assigned` with no `assigned-until`. `specrail context` shows the
+metadata blocks of the section, its ancestors and its subsections. If you do
+not claim and a section you are about to work on is held by someone else,
+point the claim out to your user before starting.
 
 ## Reading specrail check
 
