@@ -6,6 +6,10 @@
 #   tools/fuzz-for.sh <minutes> [<runs of each fuzz test per round>]
 #
 # A failing input stops the rounds, and is saved in the Zig cache as f/crash.
+#
+# The tests are built ReleaseSafe, which keeps every safety check. Debug
+# builds for x86_64 use Zig's own backend, which does not instrument code for
+# the fuzzer, and the fuzzer then fails for want of coverage.
 set -eu
 
 usage="usage: tools/fuzz-for.sh <minutes> [<runs of each fuzz test per round, such as 100K>]"
@@ -26,7 +30,7 @@ while [ $(($(date +%s) + last)) -lt "$end" ]; do
   round=$((round + 1))
   start=$(date +%s)
   echo "fuzz round $round: $runs runs of each fuzz test"
-  zig build test --fuzz="$runs"
+  zig build test -Doptimize=ReleaseSafe --fuzz="$runs"
   last=$(($(date +%s) - start))
   echo "fuzz round $round took ${last}s"
 done

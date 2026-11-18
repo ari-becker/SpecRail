@@ -181,11 +181,12 @@ rewrites them.
 ## Developing specrail
 
 ```sh
-zig build test              # unit and integration tests, then specrail check on this repository
-zig build lint              # zlinter, with the rules in tools/lint/
-zig build test-lsp          # the language server driven by pytest-lsp; needs uv
-zig build test --fuzz=100K  # search for inputs that break a fuzz test
-tools/fuzz-for.sh 60        # search for an hour, in rounds
+zig build test        # unit and integration tests, then specrail check on this repository
+zig build lint        # zlinter, with the rules in tools/lint/
+zig build test-lsp    # the language server driven by pytest-lsp; needs uv
+tools/fuzz-for.sh 60  # search for inputs that break a fuzz test for an hour, in rounds
+
+zig build test -Doptimize=ReleaseSafe --fuzz=100K  # one round of 100K runs of each fuzz test
 ```
 
 `zig build test-lsp` plays the clients of VS Code, Neovim and Emacs against
@@ -198,7 +199,9 @@ and release that `specrail claim` and `specrail release` write, the language
 server answers every request about any project exactly once, and the parsers
 take any text. `zig build test` runs each of them on fixed seeds; `--fuzz`
 searches further, without a limit and with a web UI when the `=100K` is left
-off. A failing input is saved in `.zig-cache/f/crash`, and
+off. Fuzzing needs a ReleaseSafe build: Debug builds for x86_64 use Zig's own
+backend, which does not instrument code for the fuzzer. A failing input is
+saved in `.zig-cache/f/crash`, and
 `zig build test -Dfuzz-input=.zig-cache/f/crash` replays it.
 
 On every push, CI runs the tests on Linux and macOS, lint, and the language
