@@ -4,6 +4,10 @@
 //!
 //! `zig build test` runs every fuzz test once on each seed, as a property
 //! test; `zig build test --fuzz` searches for inputs that break one.
+//!
+//! `Smith.boolWeighted` takes the weight of false first: `boolWeighted(7, 1)`
+//! is true one time in eight. A choice with a rare side puts it on true, so
+//! that a seed read back, which takes false, takes the common side.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -107,7 +111,7 @@ const block_lines = [_][]const u8{
 /// A section in reference form, with a path, number and title the made-up
 /// spec files use, so that it often names one of their sections.
 pub fn form(smith: *Smith, arena: Allocator) Allocator.Error![]const u8 {
-    const sign = if (smith.boolWeighted(7, 1)) "§" else "%";
+    const sign = if (smith.boolWeighted(7, 1)) "%" else "§";
     const parts = .{ pick(smith, &spec_paths), sign, pick(smith, &numbers), pick(smith, &titles) };
     return arena.print("{s} {s} {s} {s}", parts);
 }
@@ -117,7 +121,7 @@ fn heading(smith: *Smith, arena: Allocator, out: *std.ArrayList(u8)) Allocator.E
     const level = smith.valueRangeAtMost(u8, 1, 4);
     try out.appendNTimes(arena, '#', level);
     try out.appendSlice(arena, pick(smith, &spaces));
-    try out.appendSlice(arena, if (smith.boolWeighted(7, 1)) "§" else "%");
+    try out.appendSlice(arena, if (smith.boolWeighted(7, 1)) "%" else "§");
     try out.appendSlice(arena, pick(smith, &spaces));
     try out.appendSlice(arena, pick(smith, &numbers));
     try out.appendSlice(arena, pick(smith, &spaces));
@@ -185,7 +189,7 @@ fn tidySpecText(smith: *Smith, arena: Allocator, newline: []const u8) Allocator.
 /// headings, metadata blocks, prose and the odd line of any bytes, in any
 /// order. Either way, lines end the same way throughout.
 pub fn specText(smith: *Smith, arena: Allocator) Allocator.Error![]const u8 {
-    const newline = if (smith.boolWeighted(7, 1)) "\n" else "\r\n";
+    const newline = if (smith.boolWeighted(7, 1)) "\r\n" else "\n";
     // A seed read back takes the smallest value, false, so seeds make tidy files.
     if (!smith.value(bool)) return tidySpecText(smith, arena, newline);
     var out: std.ArrayList(u8) = .empty;

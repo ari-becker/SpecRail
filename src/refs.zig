@@ -302,11 +302,11 @@ const fuzzing = @import("fuzzing.zig");
 /// section in reference form or any bytes, and maybe a closer.
 fn madeUpLine(smith: *testing.Smith, arena: std.mem.Allocator) ![]const u8 {
     var buf: [40]u8 = undefined;
-    if (smith.boolWeighted(1, 3)) return fuzzing.bytes(smith, &buf);
+    if (smith.boolWeighted(3, 1)) return fuzzing.bytes(smith, &buf);
     const starts = [_][]const u8{ "// ", "# ", "-- ", "<!-- ", "/* ", "  * ", ";; ", "x = \"", "" };
     const gaps = [_][]const u8{ " ", "  ", "\t", "" };
     const ends = [_][]const u8{ "", "", " */", " -->", "*)", " -} -}", "\r" };
-    const middle = if (smith.boolWeighted(1, 4))
+    const middle = if (smith.boolWeighted(4, 1))
         fuzzing.bytes(smith, &buf)
     else
         try fuzzing.form(smith, arena);

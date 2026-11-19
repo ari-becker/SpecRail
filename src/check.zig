@@ -845,7 +845,8 @@ fn positionsInside(_: void, smith: *testing.Smith) !void {
     const arena = arena_state.allocator();
     var buf: [400]u8 = undefined;
     const raw = fuzzing.bytes(smith, &buf);
-    const first = if (smith.boolWeighted(1, 3)) raw else try fuzzing.specText(smith, arena);
+    // Mostly a spec file; sometimes any bytes.
+    const first = if (smith.boolWeighted(3, 1)) raw else try fuzzing.specText(smith, arena);
     const specs = [_]project.SourceFile{
         .{ .path = fuzzing.spec_paths[0], .content = first },
         .{ .path = fuzzing.spec_paths[1], .content = try fuzzing.specText(smith, arena) },
