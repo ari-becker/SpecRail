@@ -150,8 +150,10 @@ pub fn withClaim(
     }
     const closing = if (last_ending.len > 0) last_ending else newline;
     // An empty block stays when removing it would make a later block the
-    // section's metadata block.
-    const keep_empty = s.metadata != null and spec.tomlBlockFollows(lines[end..]);
+    // section's metadata block, or a `---` line below it the separator.
+    const keep_empty = s.metadata != null and
+        (spec.tomlBlockFollows(lines[end..]) or
+            promotesSeparator(file, lines, .{ .start = start, .end = end }));
     const block = if (kept.items.len == 0 and keep_empty)
         try arena.print("```toml{s}```{s}", .{ newline, closing })
     else
@@ -166,6 +168,21 @@ pub fn withClaim(
     try out.appendSlice(arena, block);
     for (lines[end..]) |l| try out.appendSlice(arena, l);
     return try out.toOwnedSlice(arena);
+}
+
+/// Whether removing `block`, the lines of a metadata block, would put a `---`
+/// line right below a blank one in a file without a separator. That line
+/// would become the separator, and the sections above it context.
+fn promotesSeparator(
+    file: *const spec.SpecFile,
+    lines: []const []const u8,
+    block: spec.Range,
+) bool {
+    if (file.separator != null or block.end >= lines.len) return false;
+    // A heading comes before the block, so it never starts on the first line.
+    const above = rewrite.body(lines[block.start - 1]);
+    const below = rewrite.body(lines[block.end]);
+    return std.mem.trim(u8, above, " \t").len == 0 and spec.isSeparator(below);
 }
 
 /// A metadata block in fmt's canonical form: the known keys in fmt's order,
@@ -393,6 +410,40 @@ test "a released block stays, empty, when the next block would take its place" {
     const rules: Rules = .{ .now = 20774 * 86400 };
     const why = try checkChange(arena, "specs/a.spec.md", held, content, rules);
     try testing.expectEqual(@as(?[]const u8, null), why);
+}
+
+// specrail: specs/cli/claim.spec.md § 2.1 Release commit
+test "a released block stays, empty, when a --- line below it would become the separator" {
+    // Found by fuzzing: removing it put the --- right after a blank line,
+    // which made it the separator and the section above it context, and the
+    // hook refused the release.
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const claim: Claim = .{ .assignee = "agent-7", .until = "2026-11-17T02:00:00Z" };
+    const rules: Rules = .{ .now = 20774 * 86400 };
+    const content = "# § 1 One\n\n```toml\n```\n---\nIt MUST work.\n";
+    const held = try claimed(arena, content, 0, claim);
+    try testing.expectEqualStrings(content, try claimed(arena, held, 0, null));
+    const why = try checkChange(arena, "specs/a.spec.md", held, content, rules);
+    try testing.expectEqual(@as(?[]const u8, null), why);
+    // Otherwise the block goes: below a separator, the --- is a line of
+    // prose, and without the blank line or the ---, no line becomes one.
+    const cases = [_]struct { []const u8, []const u8 }{
+        .{
+            "Context.\n\n---\n\n# § 1 One\n\n```toml\n```\n---\nIt MUST work.\n",
+            "Context.\n\n---\n\n# § 1 One\n\n---\nIt MUST work.\n",
+        },
+        .{ "# § 1 One\n```toml\n```\n---\nIt MUST work.\n", "# § 1 One\n---\nIt MUST work.\n" },
+        .{ "# § 1 One\n\n```toml\n```\nIt MUST work.\n", "# § 1 One\n\nIt MUST work.\n" },
+    };
+    for (cases) |c| {
+        const with_claim = try claimed(arena, c[0], 0, claim);
+        const released = try claimed(arena, with_claim, 0, null);
+        try testing.expectEqualStrings(c[1], released);
+        const accepted = try checkChange(arena, "specs/a.spec.md", with_claim, released, rules);
+        try testing.expectEqual(@as(?[]const u8, null), accepted);
+    }
 }
 
 test "a claim is written as a canonical metadata block, and removed without a trace" {
