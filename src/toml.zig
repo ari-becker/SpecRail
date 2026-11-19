@@ -245,8 +245,13 @@ const Parser = struct {
                 return out.toOwnedSlice(p.arena);
             }
             if (c == '\\') {
+                // Errors in an escape sequence point at its backslash.
+                const at: Position = .{ .line = p.line, .column = p.column() };
                 p.pos += 1;
-                const e = p.peek() orelse return p.fail("unterminated string", .{});
+                // Only multi-line strings, which are not supported, continue
+                // past a backslash at the end of a line.
+                if (p.atLineEnd()) return p.fail("unterminated string", .{});
+                const e = p.peek().?;
                 p.pos += 1;
                 switch (e) {
                     'b' => try out.append(p.arena, 0x08),
@@ -258,16 +263,22 @@ const Parser = struct {
                     '\\' => try out.append(p.arena, '\\'),
                     'u', 'U' => {
                         const n: usize = if (e == 'u') 4 else 8;
-                        if (p.pos + n > p.text.len) return p.fail("invalid unicode escape", .{});
-                        const cp = std.fmt.parseInt(u21, p.text[p.pos .. p.pos + n], 16) catch
-                            return p.fail("invalid unicode escape", .{});
+                        const rest = p.text[p.pos..];
+                        const digits = if (rest.len >= n) rest[0..n] else "";
+                        const cp = std.fmt.parseInt(u21, digits, 16) catch
+                            return p.failAt(at, "invalid unicode escape", .{});
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cp, &buf) catch
-                            return p.fail("invalid unicode escape", .{});
+                            return p.failAt(at, "invalid unicode escape", .{});
                         try out.appendSlice(p.arena, buf[0..len]);
                         p.pos += n;
                     },
-                    else => return p.fail("invalid escape sequence '\\{c}'", .{e}),
+                    // A message names only a character that prints as itself.
+                    else => if (std.ascii.isPrint(e)) {
+                        return p.failAt(at, "invalid escape sequence '\\{c}'", .{e});
+                    } else {
+                        return p.failAt(at, "invalid escape sequence", .{});
+                    },
                 }
                 continue;
             }
@@ -496,6 +507,29 @@ test "a key that appears twice is an error" {
     try testing.expectEqual(@as(u32, 3), e.line);
 }
 
+test "an error in an escape sequence points at its backslash, on its line" {
+    // Found by fuzzing: a backslash at the end of a line took the line break
+    // for the character it escapes, and the error pointed past the line, with
+    // the line break in its message.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_][]const u8{ "a = \"x\\\nb = 1", "a = \"x\\\r\nb = 1", "a = \"x\\" }) |text| {
+        const ended = try expectErr(arena, text, "unterminated string");
+        try testing.expectEqual(Position{ .line = 1, .column = 8 }, Position{
+            .line = ended.line,
+            .column = ended.column,
+        });
+    }
+    const unknown = try expectErr(arena, "a = \"x\\q\"", "invalid escape sequence '\\q'");
+    try testing.expectEqual(@as(u32, 7), unknown.column);
+    const control = try expectErr(arena, "a = \"x\\\x01\"", "invalid escape sequence");
+    try testing.expectEqual(@as(u32, 7), control.column);
+    try testing.expectEqualStrings("invalid escape sequence", control.message);
+    const unicode = try expectErr(arena, "a = \"\\u12\"", "invalid unicode escape");
+    try testing.expectEqual(@as(u32, 6), unicode.column);
+}
+
 // ---------------------------------------------------------------- fuzz tests
 
 const fuzzing = @import("fuzzing.zig");
@@ -520,16 +554,24 @@ fn anyDocument(_: void, smith: *testing.Smith) !void {
         "[table]",
         "h = {}",
         "",
+        "i = \"\\t\\u00e9\"",
+        "j = \"a\\",
+        "k = \"a\\\r",
+        "l = \"\\q\"",
+        "m = \"\\u12\"",
+        "n = \"\\\t\"",
     };
     var text: std.ArrayList(u8) = .empty;
     errdefer text.deinit(arena);
     var buf: [24]u8 = undefined;
     // The fuzzer ends the document; a seed ends it when its bytes run out.
     while (!smith.eosWeightedSimple(7, 1)) {
+        // Mostly the lines above, and every time in a seed read back, which
+        // takes false; otherwise any bytes.
         const piece = if (smith.boolWeighted(3, 1))
-            fuzzing.pick(smith, &pieces)
+            fuzzing.bytes(smith, &buf)
         else
-            fuzzing.bytes(smith, &buf);
+            fuzzing.pick(smith, &pieces);
         try text.appendSlice(arena, piece);
         try text.append(arena, '\n');
     }
@@ -539,6 +581,14 @@ fn anyDocument(_: void, smith: *testing.Smith) !void {
             try testing.expect(e.line >= 1);
             try testing.expect(e.line <= lines);
             try testing.expect(e.column >= 1);
+            // The column is on the line, or just past its last character.
+            var it = std.mem.splitScalar(u8, text.items, '\n');
+            for (1..e.line) |_| _ = it.next();
+            const line = it.next().?;
+            const len = line.len - @intFromBool(std.mem.endsWith(u8, line, "\r"));
+            try testing.expect(e.column <= len + 1);
+            // A message is one line.
+            try testing.expect(std.mem.findAny(u8, e.message, "\r\n") == null);
         },
         .ok => |doc| for (doc.entries, 0..) |entry, i| {
             try testing.expect(entry.line >= 1);
