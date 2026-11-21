@@ -74,8 +74,10 @@ ended() {
 began=$(date +%s)
 end=$((began + minutes * 60))
 report=$((began + 30 * 60))
-echo "fuzzing for $minutes minutes${FUZZ_SEED:+ with seed $FUZZ_SEED}," \
-  "starting from $(saved) saved inputs"
+# The build runs a fuzzer on each core it counts.
+cores=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN)
+echo "fuzzing for $minutes minutes on $cores cores, a fuzzer on each," \
+  "${FUZZ_SEED:+with seed $FUZZ_SEED, }starting from $(saved) saved inputs"
 touch "$work/started"
 zig build test -Doptimize=ReleaseSafe --fuzz "$@" >"$log" 2>&1 &
 pid=$!
