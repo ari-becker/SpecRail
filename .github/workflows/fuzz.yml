@@ -1,8 +1,9 @@
 name: Fuzz
 
-# The fuzz tests search for 5 hours 50 minutes every night, and for a quarter
-# of an hour on every pull request. CI's zig build test runs each of them on
-# fixed seeds on every push; this searches much further.
+# Every fuzz test has a job of its own, which fuzzes it on all of its
+# runner's cores: for 5 hours 50 minutes every night, and for a quarter of an
+# hour on every pull request. CI's zig build test runs each of them on fixed
+# seeds on every push; this searches much further.
 on:
   schedule:
     # 03:17 UTC, off the hour, when scheduled runs are fewer.
@@ -18,38 +19,100 @@ on:
 permissions:
   contents: read
 
-# One search at a time on each branch: the nightly searches share what
-# earlier ones found, and a new push to a pull request replaces its search.
+# One search at a time on each branch, so that each fuzz test's search starts
+# from what the one before it found; a new push to a pull request replaces
+# its search.
 concurrency:
   group: fuzz-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  fuzz:
-    name: Fuzz
+  tests:
+    name: List the fuzz tests
     runs-on: ubuntu-latest
-    # GitHub stops a job on its own runners after 6 hours. The rounds stop by
-    # themselves before 350 minutes, which leaves the setup, the cache save
-    # and the upload of a failing input the rest; this is the backstop.
-    timeout-minutes: 360
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # setup-zig keeps this job's Zig cache from one run to the next, and
-      # with it the inputs each fuzz test has found, so every night starts
-      # where the last one stopped. A pull request starts from main's, and
-      # what it finds stays with the pull request.
+      # Each fuzz test gets its place in the list, for its seed, and a name
+      # made of its words, for its cache.
+      - id: list
+        run: |
+          matrix=$(tools/fuzz-tests.sh | jq -Rnc '[inputs] | {include: to_entries | map({
+            shard: .key,
+            test: .value,
+            slug: (.value | ascii_downcase | gsub("[^a-z0-9]+"; "-") | ltrimstr("fuzz-") | rtrimstr("-"))
+          })}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: ${{ matrix.test }}
+    needs: tests
+    runs-on: ubuntu-latest
+    # GitHub stops a job on its own runners after 6 hours. The fuzzing stops
+    # at 350 minutes, which leaves the setup, the build, saving what it found
+    # and keeping a failing input the rest; this is the backstop.
+    timeout-minutes: 360
+    strategy:
+      # A failure in one fuzz test leaves the others searching.
+      fail-fast: false
+      # GitHub runs 20 jobs at a time on the Free plan; the 2 left over keep
+      # CI moving during the night's search.
+      max-parallel: 18
+      matrix: ${{ fromJSON(needs.tests.outputs.matrix) }}
+    env:
+      CORPUS_KEY: fuzz-${{ matrix.slug }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # setup-zig's own cache would hold the whole Zig cache, and it clears
+      # it at 2 GiB. Each job keeps only its fuzz test's inputs instead.
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          use-cache: false
+      # The inputs this fuzz test saved in the last search, so that this one
+      # starts where that one stopped. A pull request starts from main's, and
+      # what it finds stays with the pull request.
+      - name: Restore the inputs this test saved
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.ZIG_LOCAL_CACHE_DIR }}/f
+            !${{ env.ZIG_LOCAL_CACHE_DIR }}/f/crash
+          key: ${{ env.CORPUS_KEY }}
+          restore-keys: fuzz-${{ matrix.slug }}-
       - name: Fuzz
         env:
           MINUTES: ${{ inputs.minutes || (github.event_name == 'pull_request' && '15') || '350' }}
-        run: tools/fuzz-for.sh "$MINUTES" 100K
+          TEST: ${{ matrix.test }}
+          RUN: ${{ github.run_number }}
+          ATTEMPT: ${{ github.run_attempt }}
+          SHARD: ${{ matrix.shard }}
+        # A seed of its own for every job of every run, for the first 65,536
+        # runs: the run's number, its attempt and the job's place in the list.
+        # The low 8 bits stay 0 for the fuzzers, which add each core's number.
+        run: |
+          FUZZ_SEED=$(( ((RUN % 65536) << 16) | ((ATTEMPT % 4) << 14) | ((SHARD % 64) << 8) ))
+          export FUZZ_SEED
+          tools/fuzz-for.sh "$MINUTES" "$TEST"
+      # Saved even when the fuzz test failed: the next search then finds the
+      # failing input again at once, until it is fixed.
+      - name: Save the inputs this test found
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.ZIG_LOCAL_CACHE_DIR }}/f
+            !${{ env.ZIG_LOCAL_CACHE_DIR }}/f/crash
+          key: ${{ env.CORPUS_KEY }}
       # Replay it with: zig build test -Dfuzz-input=<path to crash>
       - name: Keep the input that failed
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-crash
+          name: fuzz-crash-${{ matrix.slug }}
           path: ${{ env.ZIG_LOCAL_CACHE_DIR }}/f/crash
           if-no-files-found: ignore

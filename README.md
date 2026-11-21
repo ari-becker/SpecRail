@@ -184,9 +184,10 @@ rewrites them.
 zig build test        # unit and integration tests, then specrail check on this repository
 zig build lint        # zlinter, with the rules in tools/lint/
 zig build test-lsp    # the language server driven by pytest-lsp; needs uv
-tools/fuzz-for.sh 60  # search for inputs that break a fuzz test for an hour, in rounds
+tools/fuzz-for.sh 60  # search for inputs that break a fuzz test for an hour, on every core
 
-zig build test -Doptimize=ReleaseSafe --fuzz=100K  # one round of 100K runs of each fuzz test
+tools/fuzz-for.sh 60 "fuzz: any text is a document"  # only the fuzz tests so named
+zig build test -Doptimize=ReleaseSafe --fuzz=100K  # 100K runs of each fuzz test, on one core
 ```
 
 `zig build test-lsp` plays the clients of VS Code, Neovim and Emacs against
@@ -200,19 +201,25 @@ they say, and a swap undoes itself; the hook accepts every claim and release
 that `specrail claim` and `specrail release` write; the language server
 answers every request about any project exactly once, its rename and
 formatting do what mv and fmt do, and every heading it completes names its
-section exactly; and the parsers take any text. `zig build test` runs each of them on fixed seeds; `--fuzz`
-searches further, without a limit and with a web UI when the `=100K` is left
-off. Fuzzing needs a ReleaseSafe build: Debug builds for x86_64 use Zig's own
-backend, which does not instrument code for the fuzzer. A failing input is
-saved in `.zig-cache/f/crash`, and
+section exactly; and the parsers take any text. `zig build test` runs each
+of them on fixed seeds; `--fuzz` searches further. Without the `=100K`, it
+runs a fuzzer on every core, which pass each other what they find, and a web
+UI, and it never stops; `tools/fuzz-for.sh` runs it until a deadline. Every
+fuzz test keeps the inputs it found in `.zig-cache/f`, and starts from them
+the next time. Fuzzing needs a ReleaseSafe build: Debug builds for x86_64 use
+Zig's own backend, which does not instrument code for the fuzzer. A failing
+input is saved in `.zig-cache/f/crash`, and
 `zig build test -Dfuzz-input=.zig-cache/f/crash` replays it. `zig build test
---fuzz` exits 0 even when a fuzz test fails; `tools/fuzz-for.sh` watches for
-that file instead.
+--fuzz` does not stop when a fuzz test fails, and with `=100K` it exits 0;
+`tools/fuzz-for.sh` watches for that file instead. `-Dtest-filter=<name>`
+builds only the tests so named.
 
 On every push, CI runs the tests on Linux and macOS, lint, and the language
-server tests. The Fuzz workflow searches for 5 hours 50 minutes every night,
-just inside the 6 hours GitHub allows a job, starting where the night before
-stopped, and for a quarter of an hour on every pull request; it keeps any
+server tests. The Fuzz workflow gives every fuzz test a job of its own, on
+all of its runner's cores, all of them at once: for 5 hours 50 minutes every
+night, just inside the 6 hours GitHub allows a job, and for a quarter of an
+hour on every pull request. Each job starts from the inputs its fuzz test
+found the night before, with a seed no other job has had, and keeps any
 input that fails as an artifact to replay.
 
 ## License

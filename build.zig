@@ -36,7 +36,13 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run specrail");
     run_step.dependOn(&run_cmd.step);
 
-    const tests = b.addTest(.{ .root_module = exe.root_module });
+    // The Fuzz workflow fuzzes each fuzz test in a job of its own.
+    const filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Build only the tests whose names contain this; may be given more than once",
+    ) orelse &.{};
+    const tests = b.addTest(.{ .root_module = exe.root_module, .filters = filters });
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&run_tests.step);
@@ -55,22 +61,27 @@ pub fn build(b: *std.Build) void {
     b.step("check", "Check that every finished requirement has a test").dependOn(&self_check.step);
     test_step.dependOn(&self_check.step);
 
-    // The custom lint rules' own tests: a rule that flags nothing looks the same as
-    // one that works, until it is tested.
+    const rule_tests = ruleTestStep(b, exe.root_module);
+    test_step.dependOn(rule_tests);
+    b.step("test-lint-rules", "Run the custom lint rules' tests").dependOn(rule_tests);
+
+    b.step("lint", "Lint the Zig sources").dependOn(lintStep(b));
+    b.step("test-lsp", "Run the language server's end-to-end tests").dependOn(lspTestStep(b, exe));
+}
+
+/// The custom lint rules' own tests, for the target and optimization `like`
+/// has: a rule that flags nothing looks the same as one that works, until it
+/// is tested.
+fn ruleTestStep(b: *std.Build, like: *std.Build.Module) *std.Build.Step {
     const rule_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tools/lint/tests.zig"),
-        .target = target,
-        .optimize = optimize,
+        .target = like.resolved_target,
+        .optimize = like.optimize,
         .imports = &.{
             .{ .name = "zlinter", .module = b.dependency("zlinter", .{}).module("zlinter") },
         },
     }) });
-    const run_rule_tests = b.addRunArtifact(rule_tests);
-    test_step.dependOn(&run_rule_tests.step);
-    b.step("test-lint-rules", "Run the custom lint rules' tests").dependOn(&run_rule_tests.step);
-
-    b.step("lint", "Lint the Zig sources").dependOn(lintStep(b));
-    b.step("test-lsp", "Run the language server's end-to-end tests").dependOn(lspTestStep(b, exe));
+    return &b.addRunArtifact(rule_tests).step;
 }
 
 /// The language server driven the way editors drive it: pytest-lsp plays the
